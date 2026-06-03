@@ -22,10 +22,16 @@ return {
         },
       }
 
-      -- Load the colorscheme here.
-      -- Like many other themes, this one has different styles, and you could load
-      -- any other, such as 'tokyonight-storm', 'tokyonight-moon', or 'tokyonight-day'.
-      vim.cmd.colorscheme 'tokyonight-night'
+    end,
+  },
+
+  {
+    'catppuccin/nvim',
+    priority = 1001,
+    name = 'catppuccin',
+    config = function()
+      require('catppuccin').setup { flavour = 'mocha' }
+      vim.cmd.colorscheme 'catppuccin'
     end,
   },
 }
