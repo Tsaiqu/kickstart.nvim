@@ -928,10 +928,10 @@ require('lazy').setup({
   { -- Highlight, edit, and navigate code
     'nvim-treesitter/nvim-treesitter',
     build = ':TSUpdate',
-    main = 'nvim-treesitter.configs', -- Sets main module to use for opts
+    main = 'nvim-treesitter.config', -- Sets main module to use for opts
     -- [[ Configure Treesitter ]] See `:help nvim-treesitter`
     opts = {
-      ensure_installed = { 'bash', 'c', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc' },
+      ensure_installed = { 'bash', 'c', 'diff', 'html', 'lua', 'luadoc', 'markdown', 'markdown_inline', 'query', 'vim', 'vimdoc', 'python', 'typescript' },
       -- Autoinstall languages that are not installed
       auto_install = true,
       highlight = {
@@ -943,6 +943,32 @@ require('lazy').setup({
       },
       indent = { enable = true, disable = { 'ruby' } },
     },
+    -- config = function()
+    --   vim.keymap.set({ 'x' }, '[n', function()
+    --     require('vim.treesitter._select').select_prev(vim.v.count1)
+    --   end, { desc = 'Select previous treesitter node' })
+    --
+    --   vim.keymap.set({ 'x' }, ']n', function()
+    --     require('vim.treesitter._select').select_next(vim.v.count1)
+    --   end, { desc = 'Select next treesitter node' })
+    --
+    --   vim.keymap.set({ 'x', 'o' }, 'an', function()
+    --     if vim.treesitter.get_parser(nil, nil, { error = false }) then
+    --       require('vim.treesitter._select').select_parent(vim.v.count1)
+    --     else
+    --       vim.lsp.buf.selection_range(vim.v.count1)
+    --     end
+    --   end, { desc = 'Select parent treesitter node or outer incremental lsp selections' })
+    --
+    --   vim.keymap.set({ 'x', 'o' }, 'in', function()
+    --     if vim.treesitter.get_parser(nil, nil, { error = false }) then
+    --       require('vim.treesitter._select').select_child(vim.v.count1)
+    --     else
+    --       vim.lsp.buf.selection_range(-vim.v.count1)
+    --     end
+    --   end, { desc = 'Select child treesitter node or inner incremental lsp selections' })
+    -- end,
+
     -- There are additional nvim-treesitter modules that you can use to interact
     -- with nvim-treesitter. You should go explore a few and see what interests you:
     --
