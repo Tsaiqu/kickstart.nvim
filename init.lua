@@ -1044,3 +1044,5 @@ vim.opt.number = true
 vim.opt.relativenumber = true
 
 vim.opt.signcolumn = 'number'
+vim.opt.scrolloff = 6
+vim.opt.mousescroll = 'ver:1,hor:3'
