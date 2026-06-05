@@ -1043,6 +1043,22 @@ vim.keymap.set('v', '<leader>y', '"+y', opts)
 vim.opt.number = true
 vim.opt.relativenumber = true
 
+local augroup = vim.api.nvim_create_augroup('RelativeNumber', { clear = true })
+
+vim.api.nvim_create_autocmd('InsertEnter', {
+  group = augroup,
+  callback = function()
+    vim.opt.relativenumber = false
+  end,
+})
+
+vim.api.nvim_create_autocmd('InsertLeave', {
+  group = augroup,
+  callback = function()
+    vim.opt.relativenumber = true
+  end,
+})
+
 vim.opt.signcolumn = 'number'
 vim.opt.scrolloff = 6
 vim.opt.mousescroll = 'ver:1,hor:3'
