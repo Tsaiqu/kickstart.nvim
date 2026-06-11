@@ -13,5 +13,17 @@ return {
       local harpoon = require 'harpoon'
       harpoon.ui:toggle_quick_menu(harpoon:list())
     end, { desc = 'Toggle [H]arpoon Quick Menu' })
+
+    vim.api.nvim_create_autocmd('FileType', {
+      pattern = 'harpoon',
+      callback = function(ev)
+        for i = 1, 4 do
+          vim.keymap.set('n', tostring(i), function()
+            vim.api.nvim_win_close(0, true)
+            require('harpoon'):list():select(i)
+          end, { buffer = ev.buf, nowait = true })
+        end
+      end,
+    })
   end,
 }
