@@ -8,6 +8,17 @@ return {
     height = 25,
     border = 'rounded',
     default_mappings = false,
+    post_open_hook = function(bufnr, _)
+      vim.keymap.set('n', '<Esc>', function()
+        local cur = vim.api.nvim_get_current_win()
+        -- floating windows have non empty "relative" field
+        if vim.api.nvim_win_get_config(cur).relative ~= '' then
+          vim.api.nvim_win_close(cur, false)
+        else
+          vim.cmd 'nohlsearch'
+        end
+      end, { buffer = bufnr, nowait = true, silent = true, desc = 'Close goto-preview window' })
+    end,
   },
   keys = {
     { 'gpd', "<cmd>lua require('goto-preview').goto_preview_definition()<cr>" },
