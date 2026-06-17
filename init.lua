@@ -1060,4 +1060,28 @@ vim.api.nvim_create_autocmd('InsertLeave', {
 
 vim.opt.signcolumn = 'number'
 vim.opt.scrolloff = 6
-vim.opt.mousescroll = 'ver:1,hor:3'
+vim.opt.mousescroll = 'ver:1,hor:6'
+
+if vim.g.neovide then
+  vim.opt.winblend = 100
+  vim.opt.pumblend = 100
+  vim.g.neovide_floating_blur_amount_x = 30
+  vim.g.neovide_floating_blur_amount_y = 30
+
+  vim.o.guifont = 'FiraCode Nerd Font:h11'
+
+  -- hotkeys for changing font size
+  vim.g.neovide_scale_factor = 1.0
+  local function change_scale(delta)
+    vim.g.neovide_scale_factor = vim.g.neovide_scale_factor * delta
+  end
+  vim.keymap.set('n', '<C-=>', function()
+    change_scale(1.1)
+  end)
+  vim.keymap.set('n', '<C-->', function()
+    change_scale(1 / 1.1)
+  end)
+
+  -- scroll options
+  vim.o.mousescroll = 'ver:3,hor:6'
+end
