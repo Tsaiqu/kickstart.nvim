@@ -158,9 +158,6 @@ vim.o.inccommand = 'split'
 -- Show which line your cursor is on
 vim.o.cursorline = true
 
--- Minimal number of screen lines to keep above and below the cursor.
-vim.o.scrolloff = 10
-
 -- if performing an operation that would fail due to unsaved changes in the buffer (like `:q`),
 -- instead raise a dialog asking if you wish to save the current file(s)
 -- See `:help 'confirm'`
@@ -434,7 +431,23 @@ require('lazy').setup({
       local builtin = require 'telescope.builtin'
       vim.keymap.set('n', '<leader>sh', builtin.help_tags, { desc = '[S]earch [H]elp' })
       vim.keymap.set('n', '<leader>sk', builtin.keymaps, { desc = '[S]earch [K]eymaps' })
-      vim.keymap.set('n', '<leader>sf', builtin.find_files, { desc = '[S]earch [F]iles' })
+      vim.keymap.set('n', '<leader>sf', function()
+        local conf = require('telescope.config').values
+        local sorter = conf.file_sorter()
+        local orig = sorter.scoring_function
+
+        sorter.scoring_function = function(self, prompt, line, entry)
+          local path = (entry and (entry.path or entry.filename)) or line
+          local is_test = path and (path:match '[/\\]tests?[/\\]' or path:match '[/\\]test_' or path:match '^tests?[/\\]' or path:match '^test_') ~= nil
+          local score = orig(self, prompt, line)
+          if score > 0 and is_test then
+            return score * 3
+          end
+          return score
+        end
+
+        builtin.find_files { sorter = sorter }
+      end, { desc = '[S]earch [F]iles' })
       vim.keymap.set('n', '<leader>ss', builtin.builtin, { desc = '[S]earch [S]elect Telescope' })
       vim.keymap.set('n', '<leader>sw', builtin.grep_string, { desc = '[S]earch current [W]ord' })
       vim.keymap.set('n', '<leader>sg', builtin.live_grep, { desc = '[S]earch by [G]rep' })
@@ -690,8 +703,9 @@ require('lazy').setup({
         --
         -- But for many setups, the LSP (`ts_ls`) will work just fine
         -- ts_ls = {},
-        --
+        vtsls = {},
         basedpyright = {},
+        ruff = {},
 
         lua_ls = {
           -- cmd = { ... },
@@ -1065,13 +1079,13 @@ vim.opt.mousescroll = 'ver:1,hor:6'
 if vim.g.neovide then
   vim.opt.winblend = 100
   vim.opt.pumblend = 100
-  vim.g.neovide_floating_blur_amount_x = 30
-  vim.g.neovide_floating_blur_amount_y = 30
+  vim.g.neovide_floating_blur_amount_x = 100
+  vim.g.neovide_floating_blur_amount_y = 100
 
   vim.o.guifont = 'FiraCode Nerd Font:h11'
 
   -- hotkeys for changing font size
-  vim.g.neovide_scale_factor = 1.0
+  vim.g.neovide_scale_factor = 0.9
   local function change_scale(delta)
     vim.g.neovide_scale_factor = vim.g.neovide_scale_factor * delta
   end
