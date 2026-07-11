@@ -20,6 +20,9 @@ return {
     update_to_buf_dir = true,
     close_if_last_window = true,
     filesystem = {
+      follow_current_file = {
+        enabled = true,
+      },
       window = {
         mappings = {
           ['\\'] = 'close_window',

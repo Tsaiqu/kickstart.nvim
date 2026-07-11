@@ -1,24 +1,53 @@
 return {
-  vim.keymap.set('n', '<leader>e', '<Cmd>Neotree<CR>'),
-  require('neo-tree').setup {
-    popup_border_style = 'NC', -- or "" to use 'winborder' on Neovim v0.11+
-    source_selector = { winbar = true, statusline = true },
+  'nvim-neo-tree/neo-tree.nvim',
+  version = '*',
+  lazy = false,
+  dependencies = {
+    'nvim-lua/plenary.nvim',
+    'nvim-tree/nvim-web-devicons',
+    'MunifTanjim/nui.nvim',
+  },
+  keys = {
+    { '<leader>e', '<Cmd>Neotree<CR>', desc = 'NeoTree toggle' },
+    {
+      '\\',
+      function()
+        -- Never let neo-tree prompt to change cwd when the current buffer
+        -- lives outside it; just reveal within the existing cwd if possible.
+        require('neo-tree.command').execute {
+          action = 'focus',
+          reveal = true,
+          dir = vim.fn.getcwd(),
+        }
+      end,
+      desc = 'NeoTree reveal',
+      silent = true,
+    },
+  },
+  opts = {
+    auto_close = true,
+    auto_open = false,
+    auto_update = true,
+    update_to_buf_dir = true,
+    close_if_last_window = true,
+    popup_border_style = '',
+    source_selector = { winbar = true, statusline = false },
     clipboard = {
-      sync = 'none', -- or "global"/"universal" to share a clipboard for each/all Neovim instance(s), respectively
+      sync = 'universal',
     },
     enable_git_status = true,
     enable_diagnostics = true,
-    open_files_do_not_replace_types = { 'terminal', 'trouble', 'qf' }, -- when opening files, do not use windows containing these filetypes or buftypes
+    open_files_do_not_replace_types = { 'terminal', 'trouble', 'qf' },
     open_files_using_relative_paths = false,
-    sort_case_insensitive = false, -- used when sorting files and directories in the tree
-    sort_function = nil, -- use a custom function for sorting files and directories in the tree
-    -- sort_function = function (a,b)
-    --       if a.type == b.type then
-    --           return a.path > b.path
-    --       else
-    --           return a.type > b.type
-    --       end
-    --   end , -- this sorts files and directories descendantly
+    sort_case_insensitive = false,
+    sort_function = nil,
+    -- sort_function = function(a, b)
+    --   if a.type == b.type then
+    --     return a.path > b.path
+    --   else
+    --     return a.type > b.type
+    --   end
+    -- end, -- this sorts files and directories descendantly
     event_handlers = {
       {
         event = 'after_render',
@@ -43,16 +72,16 @@ return {
         last_indent_marker = '└',
         highlight = 'NeoTreeIndentMarker',
         -- expander config, needed for nesting files
-        with_expanders = nil, -- if nil and file nesting is enabled, will enable expanders
-        expander_collapsed = '',
-        expander_expanded = '',
+        with_expanders = nil, -- if nil and file nesting is enable, will enable expanders
+        expander_collapsed = '',
+        expander_expanded = '',
         expander_highlight = 'NeoTreeExpander',
       },
       icon = {
-        folder_closed = '',
-        folder_open = '',
+        -- folder_closed = '',
+        -- folder_open = '',
         folder_empty = '󰜌',
-        provider = function(icon, node, state) -- default icon provider utilizes nvim-web-devicons if available
+        provider = function(icon, node, state) -- deafult icon provider utilizes nvim-web-devicons if available
           if node.type == 'file' or node.type == 'terminal' then
             local success, web_devicons = pcall(require, 'nvim-web-devicons')
             local name = node.type == 'terminal' and 'terminal' or node.name
@@ -75,23 +104,22 @@ return {
       },
       name = {
         trailing_slash = false,
-        use_filtered_colors = true, -- Whether to use a different highlight when the file is filtered (hidden, dotfile, etc.).
+        use_filtered_colors = true, -- same as above
         use_git_status_colors = true,
         highlight = 'NeoTreeFileName',
       },
       git_status = {
         symbols = {
-          -- Change type
-          added = '', -- or "✚"
-          modified = '', -- or ""
-          deleted = '✖', -- this can only be used in the git_status source
-          renamed = '󰁕', -- this can only be used in the git_status source
+          added = '+',
+          modified = '',
+          deleted = '✖',
+          renamed = '󰁕',
           -- Status type
-          untracked = '',
-          ignored = '',
+          untracked = '',
+          ignored = '',
           unstaged = '󰄱',
-          staged = '',
-          conflict = '',
+          staged = '',
+          conflict = '',
         },
       },
       -- If you don't want to use these columns, you can set `enabled = false` for each of them individually
@@ -187,6 +215,7 @@ return {
         --}
         ['m'] = 'move', -- takes text input for destination, also accepts the optional config.show_path option like "add".
         ['q'] = 'close_window',
+        ['\\'] = 'close_window',
         ['R'] = 'refresh',
         ['?'] = 'show_help',
         ['<'] = 'prev_source',
@@ -208,6 +237,7 @@ return {
     filesystem = {
       filtered_items = {
         visible = false, -- when true, they will just be displayed differently than normal items
+        show_hidden_count = false, -- don't show "(x hidden items)" placeholder line
         hide_dotfiles = true,
         hide_gitignored = true,
         hide_ignored = true, -- hide files that are ignored by other gitignore-like files
@@ -240,7 +270,7 @@ return {
         },
       },
       follow_current_file = {
-        enabled = false, -- This will find and focus the file in the active buffer every time
+        enabled = true, -- This will find and focus the file in the active buffer every time
         --               -- the current file is changed while the tree is open.
         leave_dirs_open = false, -- `false` closes auto expanded dirs, such as with `:Neotree reveal`
       },
