@@ -91,7 +91,13 @@ vim.g.mapleader = ' '
 vim.g.maplocalleader = ' '
 
 -- Set to true if you have a Nerd Font installed and selected in the terminal
-vim.g.have_nerd_font = false
+vim.g.have_nerd_font = true
+
+-- Neovim treats some Nerd Font glyphs (e.g. Material Design icons in the
+-- Supplementary PUA-A range) as double-width "emoji", which misaligns
+-- indent guides/icons in neo-tree and similar plugins. Disabling this
+-- forces single-width rendering for those glyphs.
+vim.opt.emoji = false
 
 -- [[ Setting options ]]
 -- See `:help vim.o`
@@ -406,19 +412,35 @@ require('lazy').setup({
 
       -- [[ Configure Telescope ]]
       -- See `:help telescope` and `:help telescope.setup()`
+      vim.api.nvim_set_hl(0, 'TelescopeSelection', { link = 'Normal' })
+      vim.api.nvim_set_hl(0, 'TelescopeSelectionCaret', { fg = '#e0af68', bold = true })
+
       require('telescope').setup {
         -- You can put your default mappings / updates / etc. in here
         --  All the info you're looking for is in `:help telescope.setup()`
         --
-        -- defaults = {
-        --   mappings = {
-        --     i = { ['<c-enter>'] = 'to_fuzzy_refine' },
-        --   },
-        -- },
+        defaults = {
+          selection_caret = '▶ ',
+          mappings = {
+            i = { ['<c-enter>'] = 'to_fuzzy_refine' },
+          },
+        },
         -- pickers = {}
         extensions = {
           ['ui-select'] = {
             require('telescope.themes').get_dropdown(),
+          },
+        },
+        pickers = {
+          buffers = {
+            mappings = {
+              i = {
+                ['<C-d>'] = require('telescope.actions').delete_buffer,
+              },
+              n = {
+                ['d'] = require('telescope.actions').delete_buffer,
+              },
+            },
           },
         },
       }
@@ -1033,7 +1055,7 @@ require('lazy').setup({
   require 'kickstart.plugins.indent_line',
   -- require 'kickstart.plugins.lint',
   require 'kickstart.plugins.autopairs',
-  require 'kickstart.plugins.neo-tree',
+  -- require 'kickstart.plugins.neo-tree',
   require 'kickstart.plugins.gitsigns', -- adds gitsigns recommend keymaps
 
   { import = 'custom.plugins' },
@@ -1100,7 +1122,7 @@ if vim.g.neovide then
   vim.g.neovide_floating_blur_amount_x = 100
   vim.g.neovide_floating_blur_amount_y = 100
 
-  vim.o.guifont = 'FiraCode Nerd Font:h11'
+  vim.o.guifont = 'FiraCode Nerd Font Mono:h11'
 
   -- hotkeys for changing font size
   vim.g.neovide_scale_factor = 0.9
