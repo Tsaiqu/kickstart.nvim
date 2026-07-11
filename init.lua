@@ -704,8 +704,8 @@ require('lazy').setup({
         -- But for many setups, the LSP (`ts_ls`) will work just fine
         -- ts_ls = {},
         vtsls = {},
-        basedpyright = {},
-        ruff = {},
+        -- basedpyright = {},
+        -- ruff = {},
 
         lua_ls = {
           -- cmd = { ... },
@@ -791,11 +791,29 @@ require('lazy').setup({
       end,
       formatters_by_ft = {
         lua = { 'stylua' },
+        javascript = { 'prettier' },
+        javascriptreact = { 'prettier' },
+        typescript = { 'prettier' },
+        typescriptreact = { 'prettier' },
+        json = { 'prettier' },
+        css = { 'prettier' },
+        markdown = { 'prettier' },
+        toml = { 'prettier' },
         -- Conform can also run multiple formatters sequentially
-        -- python = { "isort", "black" },
+        python = { 'ruff_fix', 'ruff_organize_imports', 'ruff_format' },
         --
         -- You can use 'stop_after_first' to run the first available formatter from the list
         -- javascript = { "prettierd", "prettier", stop_after_first = true },
+      },
+      formatters = {
+        prettier = {
+          command = function(self, ctx)
+            return require('conform.util').find_executable({ 'node_modules/.bin/prettier' }, 'prettier')(self, ctx)
+          end,
+          cwd = function(_, ctx)
+            return vim.fs.root(ctx.dirname, 'node_modules')
+          end,
+        },
       },
     },
   },
