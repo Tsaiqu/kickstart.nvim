@@ -20,5 +20,18 @@ return {
     keys = {
       { '<leader>gg', '<cmd>Neogit<cr>', desc = 'Show Neogit UI' },
     },
+    opts = {
+      disable_hints = true,
+      kind = 'floating',
+      integrations = {
+        telescope = true,
+        diffview = true,
+        fzf_lua = true,
+        mini_pick = true,
+      },
+      log_view = { kind = 'floating' },
+      popup = { kind = 'floating' },
+      stash = { kind = 'floating' },
+    },
   },
 }
