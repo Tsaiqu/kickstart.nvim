@@ -4,7 +4,7 @@ return {
   opts = {
     options = {
       theme = 'catppuccin-nvim',
-      section_separators = { left = '', right = '' },
+      section_separators = { left = vim.fn.nr2char(0xe0b4), right = vim.fn.nr2char(0xe0b6) },
       component_separators = '',
       icons_enabled = true,
     },
@@ -23,12 +23,22 @@ return {
             return name
           end,
         },
-        'diff',
+        -- 'diff',
         'diagnostics',
       },
       lualine_c = { 'filename' },
       lualine_x = { 'filetype' },
-      lualine_y = { 'progress' },
+      lualine_y = {
+        {
+          'diff',
+          symbols = { added = '', modified = '~', removed = '' },
+          diff_color = {
+            added = { fg = '#98be65' },
+            modified = { fg = '#ff8800' },
+            removed = { fg = '#ec5f67' },
+          },
+        },
+      },
       lualine_z = { 'location' },
     },
   },

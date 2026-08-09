@@ -22,7 +22,7 @@ return {
     },
     opts = {
       disable_hints = true,
-      kind = 'floating',
+      -- kind = 'floating',
       integrations = {
         telescope = true,
         diffview = true,

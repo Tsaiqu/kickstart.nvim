@@ -412,8 +412,14 @@ require('lazy').setup({
 
       -- [[ Configure Telescope ]]
       -- See `:help telescope` and `:help telescope.setup()`
-      vim.api.nvim_set_hl(0, 'TelescopeSelection', { link = 'Normal' })
-      vim.api.nvim_set_hl(0, 'TelescopeSelectionCaret', { fg = '#e0af68', bold = true })
+
+      -- Deferred so it wins over the highlight catppuccin's own telescope
+      -- integration sets during startup.
+      -- vim.schedule(function()
+      --   vim.api.nvim_set_hl(0, 'TelescopeSelection', { link = 'CursorLine' })
+      --   vim.api.nvim_set_hl(0, 'TelescopeSelectionCaret', { fg = '#e0af68', bold = true })
+      --   vim.api.nvim_set_hl(0, 'TelescopePreviewLine', { bg = '#313244' })
+      -- end)
 
       require('telescope').setup {
         -- You can put your default mappings / updates / etc. in here
@@ -725,9 +731,19 @@ require('lazy').setup({
         --
         -- But for many setups, the LSP (`ts_ls`) will work just fine
         -- ts_ls = {},
-        vtsls = {},
+        vtsls = {
+          settings = {
+            typescript = {
+              updateImportsOnFileMove = { enabled = 'always' },
+            },
+            javascript = {
+              updateImportsOnFileMove = { enabled = 'always' },
+            },
+          },
+        },
         -- basedpyright = {},
         -- ruff = {},
+        eslint = {},
 
         lua_ls = {
           -- cmd = { ... },
@@ -953,43 +969,6 @@ require('lazy').setup({
   -- Highlight todo, notes, etc in comments
   { 'folke/todo-comments.nvim', event = 'VimEnter', dependencies = { 'nvim-lua/plenary.nvim' }, opts = { signs = false } },
 
-  { -- Collection of various small independent plugins/modules
-    'echasnovski/mini.nvim',
-    config = function()
-      -- Better Around/Inside textobjects
-      --
-      -- Examples:
-      --  - va)  - [V]isually select [A]round [)]paren
-      --  - yinq - [Y]ank [I]nside [N]ext [Q]uote
-      --  - ci'  - [C]hange [I]nside [']quote
-      require('mini.ai').setup { n_lines = 500 }
-
-      -- Add/delete/replace surroundings (brackets, quotes, etc.)
-      --
-      -- - saiw) - [S]urround [A]dd [I]nner [W]ord [)]Paren
-      -- - sd'   - [S]urround [D]elete [']quotes
-      -- - sr)'  - [S]urround [R]eplace [)] [']
-      require('mini.surround').setup()
-
-      -- Simple and easy statusline.
-      --  You could remove this setup call if you don't like it,
-      --  and try some other statusline plugin
-      -- local statusline = require 'mini.statusline'
-      -- set use_icons to true if you have a Nerd Font
-      -- statusline.setup { use_icons = vim.g.have_nerd_font }
-
-      -- You can configure sections in the statusline by overriding their
-      -- default behavior. For example, here we set the section for
-      -- cursor location to LINE:COLUMN
-      ---@diagnostic disable-next-line: duplicate-set-field
-      -- statusline.section_location = function()
-      --   return '%2l:%-2v'
-      -- end
-
-      -- ... and there is more!
-      --  Check out: https://github.com/echasnovski/mini.nvim
-    end,
-  },
   { -- Highlight, edit, and navigate code
     'nvim-treesitter/nvim-treesitter',
     build = ':TSUpdate',
@@ -1008,31 +987,6 @@ require('lazy').setup({
       },
       indent = { enable = true, disable = { 'ruby' } },
     },
-    -- config = function()
-    --   vim.keymap.set({ 'x' }, '[n', function()
-    --     require('vim.treesitter._select').select_prev(vim.v.count1)
-    --   end, { desc = 'Select previous treesitter node' })
-    --
-    --   vim.keymap.set({ 'x' }, ']n', function()
-    --     require('vim.treesitter._select').select_next(vim.v.count1)
-    --   end, { desc = 'Select next treesitter node' })
-    --
-    --   vim.keymap.set({ 'x', 'o' }, 'an', function()
-    --     if vim.treesitter.get_parser(nil, nil, { error = false }) then
-    --       require('vim.treesitter._select').select_parent(vim.v.count1)
-    --     else
-    --       vim.lsp.buf.selection_range(vim.v.count1)
-    --     end
-    --   end, { desc = 'Select parent treesitter node or outer incremental lsp selections' })
-    --
-    --   vim.keymap.set({ 'x', 'o' }, 'in', function()
-    --     if vim.treesitter.get_parser(nil, nil, { error = false }) then
-    --       require('vim.treesitter._select').select_child(vim.v.count1)
-    --     else
-    --       vim.lsp.buf.selection_range(-vim.v.count1)
-    --     end
-    --   end, { desc = 'Select child treesitter node or inner incremental lsp selections' })
-    -- end,
 
     -- There are additional nvim-treesitter modules that you can use to interact
     -- with nvim-treesitter. You should go explore a few and see what interests you:
@@ -1122,7 +1076,7 @@ if vim.g.neovide then
   vim.g.neovide_floating_blur_amount_x = 100
   vim.g.neovide_floating_blur_amount_y = 100
 
-  vim.o.guifont = 'FiraCode Nerd Font Mono:h11'
+  vim.o.guifont = 'JetBrainsMono Nerd Font Mono:h11'
 
   -- hotkeys for changing font size
   vim.g.neovide_scale_factor = 0.9

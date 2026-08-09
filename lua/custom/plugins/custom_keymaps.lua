@@ -25,4 +25,6 @@ return {
 
   -- disable hightligh after search
   vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>'),
+
+  vim.keymap.set('n', '<C-w>d', vim.diagnostic.open_float),
 }

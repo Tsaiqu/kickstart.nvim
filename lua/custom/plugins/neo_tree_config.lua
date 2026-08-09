@@ -6,9 +6,10 @@ return {
     'nvim-lua/plenary.nvim',
     'nvim-tree/nvim-web-devicons',
     'MunifTanjim/nui.nvim',
+    'luckasRanarison/neo-rename.nvim',
   },
   keys = {
-    { '<leader>e', '<Cmd>Neotree<CR>', desc = 'NeoTree toggle' },
+    { '<leader>e', ':Neotree toggle<CR>', desc = 'NeoTree toggle' },
     {
       '\\',
       function()

@@ -4,8 +4,8 @@ return {
   opts = {
     border = 'rounded',
     wrap = true,
-    max_width = 100,
-    max_height = 30,
+    max_width = nil,
+    max_height = nil,
     toggle = false,
     multi_server = true,
 
@@ -43,7 +43,7 @@ return {
       desc = 'Pretty hover',
     },
 
-    {
+    --[[ {
       '<leader>lh',
       function()
         require('pretty_hover').hover()
@@ -57,6 +57,6 @@ return {
         require('pretty_hover').close()
       end,
       desc = 'Close Pretty Hover',
-    },
+    }, ]]
   },
 }

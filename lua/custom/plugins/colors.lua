@@ -21,7 +21,6 @@ return {
           comments = { italic = false }, -- Disable italics in comments
         },
       }
-
     end,
   },
 
@@ -30,7 +29,17 @@ return {
     priority = 1001,
     name = 'catppuccin',
     config = function()
-      require('catppuccin').setup { flavour = 'mocha' }
+      require('catppuccin').setup {
+        flavour = 'mocha',
+        custom_highlights = function(colors)
+          return {
+            -- explicit fields (not `link`) so catppuccin's own bg/fg/bold
+            -- for this group don't survive the tbl_deep_extend("keep", ...) merge
+            TelescopeSelection = { bg = colors.surface0, fg = 'NONE', bold = false },
+            TelescopeSelectionCaret = { fg = '#e0af68', bold = true },
+          }
+        end,
+      }
       vim.cmd.colorscheme 'catppuccin'
     end,
   },
