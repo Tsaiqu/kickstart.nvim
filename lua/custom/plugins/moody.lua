@@ -7,7 +7,7 @@ return {
   },
   opts = {
     blends = {
-      normal = 0.2,
+      normal = 0.08,
       insert = 0.2,
       visual = 0.25,
       command = 0.2,

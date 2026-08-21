@@ -9,8 +9,25 @@ return {
     'luckasRanarison/neo-rename.nvim',
   },
   keys = {
-    { '<leader>e', ':Neotree toggle<CR>', desc = 'NeoTree toggle' },
-    {
+    { '\\', ':Neotree toggle<CR>', desc = 'NeoTree toggle' },
+    --[[ {
+      '\\',
+      function()
+        local neo_tree_open = #vim.tbl_filter(function(win)
+          return vim.bo[vim.api.nvim_win_get_buf(win)].filetype == 'neo-tree'
+        end, vim.api.nvim_list_wins()) > 0
+
+        if neo_tree_open then
+          require('neo-tree.command').execute { action = 'close' }
+        else
+          require('neo-tree.command').execute {
+            action = 'show',
+            dir = vim.fn.getcwd(),
+          }
+        end
+      end,
+    }, ]]
+    --[[ {
       '\\',
       function()
         -- Never let neo-tree prompt to change cwd when the current buffer
@@ -23,7 +40,7 @@ return {
       end,
       desc = 'NeoTree reveal',
       silent = true,
-    },
+    }, ]]
   },
   opts = {
     auto_close = true,
