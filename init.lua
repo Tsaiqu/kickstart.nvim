@@ -837,6 +837,7 @@ require('lazy').setup({
         css = { 'prettier' },
         markdown = { 'prettier' },
         toml = { 'prettier' },
+        yaml = { 'prettier' },
         -- Conform can also run multiple formatters sequentially
         python = { 'ruff_fix', 'ruff_organize_imports', 'ruff_format' },
         --
@@ -851,6 +852,13 @@ require('lazy').setup({
           cwd = function(_, ctx)
             return vim.fs.root(ctx.dirname, 'node_modules')
           end,
+          -- Force the parser from Neovim's filetype instead of letting prettier
+          -- guess it from the extension, which fails for names like foo.yaml.example
+          options = {
+            ft_parsers = {
+              yaml = 'yaml',
+            },
+          },
         },
       },
     },
