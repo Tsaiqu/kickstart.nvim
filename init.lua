@@ -837,6 +837,7 @@ require('lazy').setup({
         css = { 'prettier' },
         markdown = { 'prettier' },
         toml = { 'prettier' },
+        yaml = { 'prettier' },
         -- Conform can also run multiple formatters sequentially
         python = { 'ruff_fix', 'ruff_organize_imports', 'ruff_format' },
         --
