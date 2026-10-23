@@ -726,6 +726,13 @@ function handlers.vote()
   end
 end
 
+function handlers.diff()
+  local st = current_state()
+  if st and st.pr then
+    actions().diff(st.pr)
+  end
+end
+
 function handlers.browser()
   local st = current_state()
   if st and st.pr then
@@ -788,6 +795,7 @@ local KEY_DESCS = {
   { 'next_thread', 'Next thread' },
   { 'prev_thread', 'Previous thread' },
   { 'vote', 'Vote on PR' },
+  { 'diff', 'Show PR diff (diffview)' },
   { 'browser', 'Open in browser' },
   { 'yank_url', 'Yank PR URL' },
   { 'refresh', 'Refresh' },

@@ -533,6 +533,117 @@ function M.checkout(pr, cb)
 end
 
 -- ---------------------------------------------------------------------------
+-- Diff (diffview.nvim)
+-- ---------------------------------------------------------------------------
+
+--- Test seam: is diffview.nvim available (loaded, or lazy-loadable through its command stub)?
+function M._has_diffview()
+  return vim.fn.exists ':DiffviewOpen' == 2 or (pcall(require, 'diffview'))
+end
+
+--- Test seam: open diffview for `range` ("<left>...<right>").
+---@param range string
+function M._open_diffview(range)
+  vim.cmd('DiffviewOpen ' .. range)
+end
+
+--- Show the PR's changes in diffview.nvim, without touching the working tree:
+--- `git fetch origin` both branches (explicit refspecs, as in checkout), then
+--- `:DiffviewOpen <target>...<source>` (three dots: diff against the merge base, like Azure's
+--- "Files" tab). Each side prefers the PR's last-merge commit (exactly what Azure shows) and falls
+--- back to origin/<branch>; a commit missing locally (e.g. the branch of a completed PR was deleted)
+--- is fetched by id. Runs in cwd, which must be a clone of the PR's repository.
+---@param pr AzurePR
+---@param cb fun(err: string|nil, range: string|nil)|nil
+function M.diff(pr, cb)
+  if type(pr) ~= 'table' or not pr.source_branch or not pr.target_branch then
+    return notify('Pull request has no source / target branch', levels.WARN)
+  end
+  for _, b in ipairs { pr.source_branch, pr.target_branch, pr.source_commit or '', pr.target_commit or '' } do
+    if b:sub(1, 1) == '-' then
+      return notify('Refusing suspicious ref name ' .. b, levels.WARN)
+    end
+  end
+  if not M._has_diffview() then
+    return notify('diffview.nvim is not installed (:DiffviewOpen not found)', levels.ERROR)
+  end
+  local done = finish(cb, nil, 'Diff failed')
+  local cwd = vim.fn.getcwd()
+
+  --- First of `candidates` that resolves to a commit locally -> cb(rev) or cb(nil).
+  local function first_rev(candidates, i, cb2)
+    local rev = candidates[i]
+    if not rev then
+      return cb2(nil)
+    end
+    M._git({ 'rev-parse', '--verify', '--quiet', rev .. '^{commit}' }, { cwd = cwd }, function(code)
+      if code == 0 then
+        return cb2(rev)
+      end
+      first_rev(candidates, i + 1, cb2)
+    end)
+  end
+
+  --- Resolve one side: last-merge commit, origin/<branch>, then the commit fetched by id.
+  local function resolve(commit, branch, cb2)
+    local candidates = { commit, 'origin/' .. branch }
+    if not commit then
+      table.remove(candidates, 1)
+    end
+    first_rev(candidates, 1, function(rev)
+      if rev or not commit then
+        return cb2(rev)
+      end
+      M._git({ 'fetch', 'origin', commit }, { cwd = cwd }, function(code)
+        if code ~= 0 then
+          return cb2(nil)
+        end
+        first_rev({ commit }, 1, cb2)
+      end)
+    end)
+  end
+
+  local function fetch_and_open()
+    notify('Fetching ' .. pr.target_branch .. ' and ' .. pr.source_branch .. '…', levels.INFO)
+    local refspecs = { 'fetch', 'origin' }
+    for _, b in ipairs { pr.target_branch, pr.source_branch } do
+      table.insert(refspecs, '+refs/heads/' .. b .. ':refs/remotes/origin/' .. b)
+    end
+    -- a failed fetch is not fatal: a deleted branch (completed PR) can still be diffed by commit
+    M._git(refspecs, { cwd = cwd }, function(fcode, _, fstderr)
+      local fetch_err = fcode ~= 0 and git_err(fstderr, 'git fetch failed') or nil
+      resolve(pr.target_commit, pr.target_branch, function(left)
+        resolve(pr.source_commit, pr.source_branch, function(right)
+          if not left or not right then
+            local missing = not left and pr.target_branch or pr.source_branch
+            return done('cannot find ' .. missing .. ' locally' .. (fetch_err and (' (' .. fetch_err .. ')') or ''))
+          end
+          local range = left .. '...' .. right
+          local ok, err = pcall(M._open_diffview, range)
+          if not ok then
+            return done(tostring(err))
+          end
+          done(nil, range)
+        end)
+      end)
+    end)
+  end
+
+  -- diffview works on cwd's repository: refuse to diff a different repo's refs
+  M._git({ 'remote', 'get-url', 'origin' }, { cwd = cwd }, function(code, stdout, stderr)
+    if code ~= 0 then
+      return done('no origin remote in ' .. cwd .. ' (' .. git_err(stderr, 'git remote failed') .. ')')
+    end
+    local remote = util.parse_remote(vim.trim(stdout or ''))
+    local want = pr.repository and pr.repository.name
+    if remote and remote.repository and want and lower(remote.repository) ~= lower(want) then
+      return done(string.format('cwd is a clone of %s, but !%s belongs to %s', remote.repository, tostring(pr.id), want))
+    end
+    fetch_and_open()
+  end)
+end
+
+-- ---------------------------------------------------------------------------
 -- Current-branch PR & line comments
 -- ---------------------------------------------------------------------------
 

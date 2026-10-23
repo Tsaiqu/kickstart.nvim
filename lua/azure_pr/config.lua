@@ -48,6 +48,7 @@ M.defaults = {
       comment = 'c',
       vote = 'v',
       checkout = 'C',
+      diff = 'D', -- diffview.nvim: target...source
       help = '?',
       close = 'q',
     },
@@ -63,6 +64,7 @@ M.defaults = {
       -- not 'v' / 'y' / 'gv': the detail buffer is read-only text, keep visual mode, reselect
       -- and the yank operator; 'A' (approve menu) has no meaning in a non-modifiable buffer
       vote = 'A',
+      diff = 'D', -- diffview.nvim: target...source
       browser = 'o',
       yank_url = 'gy',
       refresh = 'R',

@@ -187,6 +187,9 @@ function M.normalize_pr(raw)
     },
     source_branch = strip_ref(val(raw.sourceRefName)),
     target_branch = strip_ref(val(raw.targetRefName)),
+    -- commits of the last merge evaluation: what Azure shows as the PR diff (target...source)
+    source_commit = val((val(raw.lastMergeSourceCommit) or {}).commitId),
+    target_commit = val((val(raw.lastMergeTargetCommit) or {}).commitId),
     reviewers = reviewers,
     review_state = M.compute_review_state(status, is_draft, reviewers),
     labels = labels,

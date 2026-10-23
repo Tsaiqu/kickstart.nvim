@@ -463,6 +463,107 @@ describe('actions.yank_url / open_in_browser', function()
   end)
 end)
 
+describe('actions.diff', function()
+  local REMOTE = 'remote get-url origin'
+  local FETCH = 'fetch origin +refs/heads/main:refs/remotes/origin/main +refs/heads/feature/x:refs/remotes/origin/feature/x'
+  local function verify(rev)
+    return 'rev-parse --verify --quiet ' .. rev .. '^{commit}'
+  end
+
+  local function run(git, over)
+    local actions = setup { git = git }
+    local opened = {}
+    actions._has_diffview = function()
+      return true
+    end
+    actions._open_diffview = function(range)
+      table.insert(opened, range)
+    end
+    local done
+    actions.diff(pr(over), function(err, range)
+      done = { err = err, range = range }
+    end)
+    teardown()
+    return done, opened
+  end
+
+  it('fetches both branches and opens the last-merge commits', function()
+    local done, opened = run({
+      [REMOTE] = { 0, 'https://dev.azure.com/org/proj/_git/web\n' },
+      [FETCH] = { 0 },
+      [verify 'tgt1'] = { 0 },
+      [verify 'src1'] = { 0 },
+    }, { source_commit = 'src1', target_commit = 'tgt1' })
+    eq({ range = 'tgt1...src1' }, done)
+    eq({ 'tgt1...src1' }, opened)
+    eq({ REMOTE, FETCH, verify 'tgt1', verify 'src1' }, ctx.git)
+  end)
+
+  it('falls back to origin/<branch> without commit ids', function()
+    local done = run {
+      [REMOTE] = { 0, 'https://dev.azure.com/org/proj/_git/web\n' },
+      [FETCH] = { 0 },
+      [verify 'origin/main'] = { 0 },
+      [verify 'origin/feature/x'] = { 0 },
+    }
+    eq({ range = 'origin/main...origin/feature/x' }, done)
+  end)
+
+  it('fetches a missing commit by id when the branch is gone', function()
+    local fetched = false
+    local git = {
+      [REMOTE] = { 0, 'https://dev.azure.com/org/proj/_git/web\n' },
+      [FETCH] = { 128, '', "fatal: couldn't find remote ref refs/heads/feature/x" },
+      [verify 'tgt1'] = { 0 },
+    }
+    setmetatable(git, {
+      __index = function(_, key)
+        if key == 'fetch origin src1' then
+          fetched = true
+          return { 0 }
+        end
+        if key == verify 'src1' then
+          return fetched and { 0 } or { 1 }
+        end
+      end,
+    })
+    local done = run(git, { source_commit = 'src1', target_commit = 'tgt1' })
+    eq({ range = 'tgt1...src1' }, done)
+    eq({ REMOTE, FETCH, verify 'tgt1', verify 'src1', verify 'origin/feature/x', 'fetch origin src1', verify 'src1' }, ctx.git)
+  end)
+
+  it('reports the fetch error when a side cannot be resolved', function()
+    local done, opened = run({
+      [REMOTE] = { 0, 'https://dev.azure.com/org/proj/_git/web\n' },
+      [FETCH] = { 128, '', "fatal: couldn't find remote ref refs/heads/feature/x" },
+      [verify 'tgt1'] = { 0 },
+    }, { source_commit = 'src1', target_commit = 'tgt1' })
+    contains(done.err, 'cannot find feature/x')
+    contains(done.err, "couldn't find remote ref")
+    eq({}, opened)
+  end)
+
+  it('refuses a clone of another repository', function()
+    local done, opened = run {
+      [REMOTE] = { 0, 'https://dev.azure.com/org/proj/_git/api\n' },
+    }
+    contains(done.err, 'clone of api')
+    eq({}, opened)
+    eq({ REMOTE }, ctx.git)
+  end)
+
+  it('reports a missing diffview', function()
+    local actions = setup {}
+    actions._has_diffview = function()
+      return false
+    end
+    actions.diff(pr())
+    teardown()
+    contains(ctx.notes[1].msg, 'diffview.nvim')
+    eq({}, ctx.git)
+  end)
+end)
+
 describe('actions.checkout', function()
   it('fetches and checks out after confirmation', function()
     local actions = setup {

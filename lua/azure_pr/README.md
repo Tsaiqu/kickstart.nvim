@@ -136,6 +136,7 @@ source branch, you are asked to confirm before the editor opens.
 | `c` | New general comment (`comment`) |
 | `v` | Vote (`vote`) |
 | `C` | Checkout source branch, after confirmation (`checkout`) |
+| `D` | Show the PR diff in diffview (`diff`, see below) |
 | `?` | Help (`help`) |
 | `q` | Close (`close`) |
 
@@ -156,6 +157,7 @@ checks (build statuses and branch policies), description and comment threads wit
 | `<CR>` | Open the file of a file-anchored thread at its line (`open_file`) |
 | `[t`, `]t` | Previous / next thread (`prev_thread`, `next_thread`) |
 | `A` | Vote: approve, approve with suggestions, wait for author, reject, reset (`vote`) |
+| `D` | Show the PR diff in diffview (`diff`) |
 | `o` / `gy` | Open in browser / yank URL (`browser`, `yank_url`) |
 | `R` | Refresh (`refresh`) |
 | `?` / `q` | Help / close (`help`, `close`) |
@@ -166,6 +168,15 @@ Threads anchored on the base (left) side of the diff, e.g. comments on deleted l
 as `path:12 (base)`; `<CR>` opens the file but does not jump, since the line number belongs to the
 target branch version. For other file threads `<CR>` warns when the checked-out branch is not the
 PR's source branch (line numbers may differ; `C` checks it out).
+
+### PR diff (`D`)
+
+Requires [diffview.nvim](https://github.com/sindrets/diffview.nvim). Run from a clone of the PR's
+repository (cwd; a clone of another repository is refused). `D` fetches both branches from `origin`
+and opens `:DiffviewOpen <target>...<source>` - the diff against the merge base, like Azure's
+**Files** tab. The working tree and the checked-out branch are not touched. Each side uses the
+PR's last-merge commit when available, else `origin/<branch>`; a commit missing locally (e.g. the
+deleted source branch of a completed PR) is fetched by id. Close with `:DiffviewClose`.
 
 Every keymap value accepts a string, a list of strings, or `false`:
 

@@ -781,6 +781,13 @@ M.KEYMAP_ACTIONS = {
     end,
   },
   {
+    'diff',
+    'Show PR diff (diffview)',
+    function()
+      with_action 'diff'
+    end,
+  },
+  {
     'help',
     'Show this help',
     function()
