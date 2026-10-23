@@ -56,6 +56,10 @@ local function val(v)
   return v
 end
 
+local function lower_str(s)
+  return type(s) == 'string' and s:lower() or s
+end
+
 local function identity(raw)
   raw = val(raw) or {}
   return {
@@ -187,6 +191,9 @@ function M.normalize_pr(raw)
     },
     source_branch = strip_ref(val(raw.sourceRefName)),
     target_branch = strip_ref(val(raw.targetRefName)),
+    -- commits of the last merge evaluation: what Azure shows as the PR diff (target...source)
+    source_commit = val((val(raw.lastMergeSourceCommit) or {}).commitId),
+    target_commit = val((val(raw.lastMergeTargetCommit) or {}).commitId),
     reviewers = reviewers,
     review_state = M.compute_review_state(status, is_draft, reviewers),
     labels = labels,
@@ -340,6 +347,306 @@ function M.normalize_threads(raws, opts)
     end
     return (a.id or 0) < (b.id or 0)
   end)
+  return out
+end
+
+--- Counts shown in the list's comment column, from normalized (non-system) threads:
+--- `comments` = non-deleted text comments, `threads` = resolvable threads (any status but
+--- 'unknown'), `resolved` = those of them that are not active/pending.
+---@param threads table[] result of normalize_threads
+---@return { comments: integer, threads: integer, resolved: integer }
+function M.thread_stats(threads)
+  local s = { comments = 0, threads = 0, resolved = 0 }
+  for _, t in ipairs(threads or {}) do
+    for _, c in ipairs(t.comments or {}) do
+      if not c.is_deleted and c.type ~= 'system' then
+        s.comments = s.comments + 1
+      end
+    end
+    if t.status ~= 'unknown' then
+      s.threads = s.threads + 1
+      if not M.is_thread_open(t.status) then
+        s.resolved = s.resolved + 1
+      end
+    end
+  end
+  return s
+end
+
+-- ---------------------------------------------------------------------------
+-- Checks (policy evaluations + PR statuses), shaped like Azure's "Checks" panel
+-- ---------------------------------------------------------------------------
+
+-- Well-known policy type ids (the display name is a fallback for localized / on-prem servers).
+M.POLICY_TYPES = {
+  build = { id = '0609b952-1397-4640-95ec-e00a01b2c241', name = 'Build' },
+  min_reviewers = { id = 'fa4e907d-c16b-4a4c-9dfa-4906e5d171dd', name = 'Minimum number of reviewers' },
+  required_reviewers = { id = 'fd2167ab-b0be-447a-8ec8-39368250530e', name = 'Required reviewers' },
+  comments = { id = 'c6a1889d-b943-4856-b76f-9e46bb6b0df2', name = 'Comment requirements' },
+  work_items = { id = '40e92b44-2fe1-4dd6-b3d8-74a9c21d0c6e', name = 'Work item linking' },
+  status = { id = 'cbdc66da-9728-4af8-aada-9a5a32e4a226', name = 'Status' },
+}
+
+---@param p table raw PolicyEvaluationRecord
+---@return string|nil key of M.POLICY_TYPES
+function M.policy_kind(p)
+  local cfg = val(p and p.configuration) or {}
+  local t = val(cfg.type) or {}
+  local id, name = lower_str(val(t.id)), val(t.displayName)
+  for key, def in pairs(M.POLICY_TYPES) do
+    if id == def.id or name == def.name then
+      return key
+    end
+  end
+  return nil
+end
+
+--- The statuses endpoint returns the whole history (every post, every iteration). Keep only the
+--- latest status per context (genre/name): highest iterationId, then latest updated/creation date,
+--- then highest id. Order of first appearance is preserved.
+---@param statuses table[]|nil raw GitPullRequestStatus list
+---@return table[]
+function M.latest_statuses(statuses)
+  local order, best = {}, {}
+  local function newer(a, b)
+    local ia, ib = tonumber(a.iterationId) or 0, tonumber(b.iterationId) or 0
+    if ia ~= ib then
+      return ia > ib
+    end
+    -- ISO 8601 timestamps compare correctly as strings
+    local da, db = tostring(a.updatedDate or a.creationDate or ''), tostring(b.updatedDate or b.creationDate or '')
+    if da ~= db then
+      return da > db
+    end
+    return (tonumber(a.id) or 0) > (tonumber(b.id) or 0)
+  end
+  for i, s in ipairs(statuses or {}) do
+    local key
+    if type(s.context) == 'table' then
+      key = (s.context.genre or '') .. '/' .. (s.context.name or '')
+    else
+      key = '#' .. i -- no context: cannot tell what it supersedes, keep it
+    end
+    if not best[key] then
+      order[#order + 1] = key
+      best[key] = s
+    elseif newer(s, best[key]) then
+      best[key] = s
+    end
+  end
+  local out = {}
+  for _, k in ipairs(order) do
+    out[#out + 1] = best[k]
+  end
+  return out
+end
+
+-- check state (render style key) from a policy evaluation status / PR status state
+local POLICY_STATE = {
+  approved = 'approved',
+  rejected = 'rejected',
+  running = 'running',
+  queued = 'queued',
+  broken = 'broken',
+  notApplicable = 'notApplicable',
+}
+local STATUS_STATE = {
+  succeeded = 'approved',
+  failed = 'rejected',
+  error = 'broken',
+  pending = 'running',
+  notApplicable = 'notApplicable',
+  notSet = 'queued',
+}
+-- Azure's wording under a build check: "<name> succeeded" / "Build succeeded"
+local BUILD_VERB = {
+  approved = 'succeeded',
+  rejected = 'failed',
+  running = 'in progress',
+  queued = 'queued',
+  broken = 'error',
+  expired = 'expired',
+}
+local GENERIC_LABEL = {
+  approved = 'Succeeded',
+  rejected = 'Failed',
+  running = 'Running',
+  queued = 'Waiting',
+  broken = 'Error',
+  expired = 'Expired',
+}
+
+local function policy_check(p, kind, definition_names)
+  local cfg = val(p.configuration) or {}
+  local settings = val(cfg.settings) or {}
+  local ctx = val(p.context) or {}
+  local state = POLICY_STATE[val(p.status)] or 'queued'
+  local c = {
+    kind = kind or 'policy',
+    state = state,
+    is_blocking = val(cfg.isBlocking) ~= false,
+    evaluation_id = val(p.evaluationId),
+  }
+  if kind == 'build' then
+    local def_id = tonumber(val(settings.buildDefinitionId))
+    local display = val(settings.displayName)
+    c.definition_id = def_id
+    c.build_id = tonumber(val(ctx.buildId))
+    if val(ctx.isExpired) == true and state ~= 'running' and state ~= 'queued' then
+      c.state = 'expired'
+    end
+    c.name = display or (def_id and definition_names and definition_names[def_id]) or ('Build' .. (def_id and (' #' .. def_id) or ''))
+    c.label = (display or 'Build') .. ' ' .. (BUILD_VERB[c.state] or c.state)
+    c.can_requeue = c.evaluation_id ~= nil
+  else
+    if kind == 'comments' then
+      c.name = 'Comments must be resolved'
+    elseif kind == 'work_items' then
+      c.name = 'Work items must be linked'
+    elseif kind == 'status' then
+      local genre, sname = val(settings.statusGenre), val(settings.statusName)
+      c.name = val(settings.defaultDisplayName) or (sname and ((genre and genre ~= '' and (genre .. '/') or '') .. sname)) or 'Status'
+      c.status_key = (genre or '') .. '/' .. (sname or '')
+    else
+      c.name = val(settings.displayName) or val((val(cfg.type) or {}).displayName) or 'Policy'
+    end
+    c.label = GENERIC_LABEL[c.state] or c.state
+  end
+  return c
+end
+
+local function status_check(s)
+  local ctx = type(s.context) == 'table' and s.context or {}
+  local name = ctx.genre and ctx.genre ~= '' and (ctx.genre .. '/' .. (ctx.name or '')) or ctx.name
+  local state = STATUS_STATE[val(s.state)] or 'queued'
+  local desc = val(s.description)
+  return {
+    kind = 'pr_status',
+    name = name or desc or 'status',
+    state = state,
+    label = (name and desc) or GENERIC_LABEL[state] or state,
+    is_blocking = false,
+    status_key = (ctx.genre or '') .. '/' .. (ctx.name or ''),
+    url = val(s.targetUrl),
+  }
+end
+
+local function is_approval(vote)
+  return (tonumber(vote) or 0) >= 5
+end
+
+--- Reviewer requirement summary: from the reviewer policies when there are any, else from votes.
+local function reviewer_summary(pr, rev_policies)
+  local approvals, rejected, waiting_author, pending_required = 0, false, false, {}
+  for _, r in ipairs(pr.reviewers or {}) do
+    if is_approval(r.vote) and not r.is_container then
+      approvals = approvals + 1
+    end
+    rejected = rejected or r.vote == -10
+    waiting_author = waiting_author or r.vote == -5
+    if r.is_required and not is_approval(r.vote) then
+      pending_required[#pending_required + 1] = r.name
+    end
+  end
+  local min
+  local state
+  if #rev_policies > 0 then
+    state = 'approved'
+    for _, rp in ipairs(rev_policies) do
+      local p = rp.raw
+      local s = POLICY_STATE[val(p.status)] or 'queued'
+      if rp.kind == 'min_reviewers' then
+        local settings = val((val(p.configuration) or {}).settings) or {}
+        min = tonumber(val(settings.minimumApproverCount)) or min
+      end
+      -- a reviewer policy is 'rejected' while it is not met yet: that is waiting, not a failure
+      -- (an actual reject vote turns the line red below)
+      if s ~= 'approved' and s ~= 'notApplicable' then
+        state = 'running'
+      end
+    end
+  else
+    local rs = pr.review_state
+    state = (rs == 'approved' or rs == 'approved_suggestions') and 'approved' or rs == 'rejected' and 'rejected' or 'running'
+  end
+  local label
+  if state == 'approved' then
+    label = 'Required reviewers approved'
+  elseif rejected then
+    state = 'rejected'
+    label = 'A reviewer rejected the changes'
+  elseif waiting_author then
+    label = 'A reviewer is waiting for the author'
+  else
+    label = 'Waiting for reviewers to approve'
+  end
+  local details = {}
+  if min then
+    details[#details + 1] = string.format('%d of %d approvals', math.min(approvals, min), min)
+  elseif approvals > 0 then
+    details[#details + 1] = approvals .. (approvals == 1 and ' approval' or ' approvals')
+  end
+  if state ~= 'approved' and #pending_required > 0 then
+    details[#details + 1] = 'required: ' .. table.concat(pending_required, ', ')
+  end
+  return { kind = 'reviewers', state = state, label = label, details = details }
+end
+
+local MERGE_SUMMARY = {
+  succeeded = { 'approved', 'No merge conflicts' },
+  conflicts = { 'rejected', 'Merge conflicts' },
+  queued = { 'running', 'Checking for merge conflicts' },
+  failure = { 'rejected', 'Merge check failed' },
+  rejectedByPolicy = { 'rejected', 'Merge rejected by policy' },
+}
+
+--- Everything the detail view shows about mergeability, mirroring Azure's PR overview:
+--- `reviewers` / `merge` summary lines and the checks split into `required` / `optional`
+--- (build, comment, work item and status policies, plus PR statuses not covered by a status
+--- policy). Reviewer policies feed the reviewers line instead of a check; policies that do not
+--- apply to the PR are dropped, like in Azure.
+---@param pr AzurePR
+---@param policies table[]|nil raw policy evaluations
+---@param statuses table[]|nil raw PR statuses
+---@param opts { definition_names: table<integer, string>|nil }|nil
+function M.pr_checks(pr, policies, statuses, opts)
+  opts = opts or {}
+  local out = { required = {}, optional = {}, passed = 0, total = 0 }
+  local rev_policies, status_keys = {}, {}
+  local function add(c)
+    if c.state == 'notApplicable' then
+      return
+    end
+    table.insert(c.is_blocking and out.required or out.optional, c)
+    out.total = out.total + 1
+    if c.state == 'approved' then
+      out.passed = out.passed + 1
+    end
+  end
+  for _, p in ipairs(policies or {}) do
+    local cfg = val(p.configuration) or {}
+    if val(cfg.isEnabled) ~= false and val(cfg.isDeleted) ~= true then
+      local kind = M.policy_kind(p)
+      if kind == 'min_reviewers' or kind == 'required_reviewers' then
+        rev_policies[#rev_policies + 1] = { raw = p, kind = kind }
+      else
+        local c = policy_check(p, kind, opts.definition_names)
+        if c.status_key then
+          status_keys[c.status_key] = true
+        end
+        add(c)
+      end
+    end
+  end
+  for _, s in ipairs(M.latest_statuses(statuses)) do
+    local c = status_check(s)
+    if not status_keys[c.status_key] then
+      add(c)
+    end
+  end
+  out.reviewers = reviewer_summary(pr, rev_policies)
+  local ms = MERGE_SUMMARY[pr.merge_status or '']
+  out.merge = { kind = 'merge', state = ms and ms[1] or 'notSet', label = ms and ms[2] or 'Merge not checked yet' }
   return out
 end
 

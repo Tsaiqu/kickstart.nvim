@@ -423,6 +423,12 @@ function M.open_in_browser(pr)
   if not url then
     return notify('Cannot determine the web URL of this pull request', levels.WARN)
   end
+  M.open_url(url)
+end
+
+--- Open `url` with vim.ui.open, reporting a missing or failing opener.
+---@param url string
+function M.open_url(url)
   -- vim.ui.open returns `nil, errmsg` (it does not throw) when no opener is found
   local ok, obj, oerr = pcall(vim.ui.open, url)
   if not ok or obj == nil then
@@ -529,6 +535,228 @@ function M.checkout(pr, cb)
       end
       try(1)
     end)
+  end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Checks: re-queue a build policy, run a pipeline, open a build
+-- ---------------------------------------------------------------------------
+
+--- Re-queue the build policy `check` (from models.pr_checks) after confirmation: Azure queues a
+--- new build, cancelling a running one. Without `check`, picks among the PR's build checks.
+---@param pr AzurePR
+---@param check table|nil
+---@param checks table[]|nil build checks to pick from when `check` is nil
+---@param cb fun(err: string|nil, result: any)|nil
+function M.requeue_check(pr, check, checks, cb)
+  if type(pr) ~= 'table' or not pr.id then
+    return notify('No pull request selected', levels.WARN)
+  end
+  if pr.status and pr.status ~= 'active' then
+    return notify('Cannot re-queue checks of a ' .. pr.status .. ' pull request', levels.WARN)
+  end
+  local function run(c)
+    if not c.can_requeue then
+      return notify(c.name .. ' is not a build policy: there is nothing to re-queue', levels.WARN)
+    end
+    input().confirm('Re-queue ' .. c.name .. ' on ' .. pr_label(pr) .. '?', function(yes)
+      if not yes then
+        return
+      end
+      api.requeue_policy_evaluation(c.evaluation_id, finish(cb, 'Re-queued ' .. c.name, 'Re-queue failed'))
+    end)
+  end
+  if check then
+    return run(check)
+  end
+  local candidates = {}
+  for _, c in ipairs(checks or {}) do
+    if c.can_requeue then
+      candidates[#candidates + 1] = c
+    end
+  end
+  if #candidates == 0 then
+    return notify('This pull request has no build policies to re-queue', levels.WARN)
+  end
+  vim.ui.select(candidates, {
+    prompt = 'Re-queue build policy',
+    format_item = function(c)
+      return c.name .. '  (' .. (c.label or c.state) .. ')'
+    end,
+  }, function(choice)
+    if choice then
+      run(choice)
+    end
+  end)
+end
+
+--- Pick one of the repository's pipelines and queue it on the PR: on the merge ref
+--- (`refs/pull/<id>/merge`, what build policies build) for active PRs, else the source branch.
+--- Needs a PAT with Build (Read & execute).
+---@param pr AzurePR
+---@param cb fun(err: string|nil, build: table|nil)|nil
+function M.run_pipeline(pr, cb)
+  local repo_id, err = repo_id_of(pr)
+  if not repo_id then
+    return notify(err, levels.WARN)
+  end
+  local ref = (pr.status == nil or pr.status == 'active') and ('refs/pull/' .. pr.id .. '/merge')
+    or (pr.source_branch and ('refs/heads/' .. pr.source_branch))
+  if not ref then
+    return notify('Pull request has no source branch', levels.WARN)
+  end
+  api.list_build_definitions(repo_id, function(lerr, defs)
+    if lerr then
+      return notify('Failed to list pipelines (the PAT needs Build: Read & execute): ' .. tostring(lerr), levels.ERROR)
+    end
+    if not defs or #defs == 0 then
+      return notify('No pipelines are defined for ' .. tostring(pr.repository.name or repo_id), levels.WARN)
+    end
+    vim.ui.select(defs, {
+      prompt = 'Run pipeline on ' .. ref,
+      format_item = function(d)
+        local path = type(d.path) == 'string' and d.path ~= '\\' and (d.path:gsub('^\\', '') .. '\\') or ''
+        return path .. tostring(d.name or d.id)
+      end,
+    }, function(def)
+      if not def then
+        return
+      end
+      input().confirm('Run ' .. tostring(def.name) .. ' on ' .. ref .. '?', function(yes)
+        if not yes then
+          return
+        end
+        api.queue_build(def.id, ref, function(qerr, build)
+          if qerr then
+            return finish(cb, nil, 'Failed to queue ' .. tostring(def.name))(qerr)
+          end
+          local url = build and build._links and build._links.web and build._links.web.href
+          local number = build and (build.buildNumber or build.id)
+          finish(cb, 'Queued ' .. tostring(def.name) .. (number and (' #' .. number) or '') .. (url and (': ' .. url) or ''), '')(nil, build)
+        end)
+      end)
+    end)
+  end)
+end
+
+--- Open the build / status page of a check in the browser.
+---@param check table from models.pr_checks
+function M.open_check(check)
+  local url = check and (check.url or (check.build_id and api.build_web_url(check.build_id)))
+  if not url then
+    return notify((check and check.name or 'This check') .. ' has no build or link to open', levels.WARN)
+  end
+  M.open_url(url)
+end
+
+-- ---------------------------------------------------------------------------
+-- Diff (diffview.nvim)
+-- ---------------------------------------------------------------------------
+
+--- Test seam: is diffview.nvim available (loaded, or lazy-loadable through its command stub)?
+function M._has_diffview()
+  return vim.fn.exists ':DiffviewOpen' == 2 or (pcall(require, 'diffview'))
+end
+
+--- Test seam: open diffview for `range` ("<left>...<right>").
+---@param range string
+function M._open_diffview(range)
+  vim.cmd('DiffviewOpen ' .. range)
+end
+
+--- Show the PR's changes in diffview.nvim, without touching the working tree:
+--- `git fetch origin` both branches (explicit refspecs, as in checkout), then
+--- `:DiffviewOpen <target>...<source>` (three dots: diff against the merge base, like Azure's
+--- "Files" tab). Each side prefers the PR's last-merge commit (exactly what Azure shows) and falls
+--- back to origin/<branch>; a commit missing locally (e.g. the branch of a completed PR was deleted)
+--- is fetched by id. Runs in cwd, which must be a clone of the PR's repository.
+---@param pr AzurePR
+---@param cb fun(err: string|nil, range: string|nil)|nil
+function M.diff(pr, cb)
+  if type(pr) ~= 'table' or not pr.source_branch or not pr.target_branch then
+    return notify('Pull request has no source / target branch', levels.WARN)
+  end
+  for _, b in ipairs { pr.source_branch, pr.target_branch, pr.source_commit or '', pr.target_commit or '' } do
+    if b:sub(1, 1) == '-' then
+      return notify('Refusing suspicious ref name ' .. b, levels.WARN)
+    end
+  end
+  if not M._has_diffview() then
+    return notify('diffview.nvim is not installed (:DiffviewOpen not found)', levels.ERROR)
+  end
+  local done = finish(cb, nil, 'Diff failed')
+  local cwd = vim.fn.getcwd()
+
+  --- First of `candidates` that resolves to a commit locally -> cb(rev) or cb(nil).
+  local function first_rev(candidates, i, cb2)
+    local rev = candidates[i]
+    if not rev then
+      return cb2(nil)
+    end
+    M._git({ 'rev-parse', '--verify', '--quiet', rev .. '^{commit}' }, { cwd = cwd }, function(code)
+      if code == 0 then
+        return cb2(rev)
+      end
+      first_rev(candidates, i + 1, cb2)
+    end)
+  end
+
+  --- Resolve one side: last-merge commit, origin/<branch>, then the commit fetched by id.
+  local function resolve(commit, branch, cb2)
+    local candidates = { commit, 'origin/' .. branch }
+    if not commit then
+      table.remove(candidates, 1)
+    end
+    first_rev(candidates, 1, function(rev)
+      if rev or not commit then
+        return cb2(rev)
+      end
+      M._git({ 'fetch', 'origin', commit }, { cwd = cwd }, function(code)
+        if code ~= 0 then
+          return cb2(nil)
+        end
+        first_rev({ commit }, 1, cb2)
+      end)
+    end)
+  end
+
+  local function fetch_and_open()
+    notify('Fetching ' .. pr.target_branch .. ' and ' .. pr.source_branch .. '…', levels.INFO)
+    local refspecs = { 'fetch', 'origin' }
+    for _, b in ipairs { pr.target_branch, pr.source_branch } do
+      table.insert(refspecs, '+refs/heads/' .. b .. ':refs/remotes/origin/' .. b)
+    end
+    -- a failed fetch is not fatal: a deleted branch (completed PR) can still be diffed by commit
+    M._git(refspecs, { cwd = cwd }, function(fcode, _, fstderr)
+      local fetch_err = fcode ~= 0 and git_err(fstderr, 'git fetch failed') or nil
+      resolve(pr.target_commit, pr.target_branch, function(left)
+        resolve(pr.source_commit, pr.source_branch, function(right)
+          if not left or not right then
+            local missing = not left and pr.target_branch or pr.source_branch
+            return done('cannot find ' .. missing .. ' locally' .. (fetch_err and (' (' .. fetch_err .. ')') or ''))
+          end
+          local range = left .. '...' .. right
+          local ok, err = pcall(M._open_diffview, range)
+          if not ok then
+            return done(tostring(err))
+          end
+          done(nil, range)
+        end)
+      end)
+    end)
+  end
+
+  -- diffview works on cwd's repository: refuse to diff a different repo's refs
+  M._git({ 'remote', 'get-url', 'origin' }, { cwd = cwd }, function(code, stdout, stderr)
+    if code ~= 0 then
+      return done('no origin remote in ' .. cwd .. ' (' .. git_err(stderr, 'git remote failed') .. ')')
+    end
+    local remote = util.parse_remote(vim.trim(stdout or ''))
+    local want = pr.repository and pr.repository.name
+    if remote and remote.repository and want and lower(remote.repository) ~= lower(want) then
+      return done(string.format('cwd is a clone of %s, but !%s belongs to %s', remote.repository, tostring(pr.id), want))
+    end
+    fetch_and_open()
   end)
 end
 

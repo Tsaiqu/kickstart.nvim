@@ -20,7 +20,15 @@ M.defaults = {
   default_filters = {},
   date_format = '%Y-%m-%d %H:%M',
   icons = true, -- nerd-font icons; false => ascii
-  list = { layout = 'tab' }, -- 'tab' | 'split' | 'vsplit' | 'current'
+  list = {
+    layout = 'tab', -- 'tab' | 'split' | 'vsplit' | 'current'
+    -- comment column (count, resolved/total threads): one threads request per shown PR, in the
+    -- background. 'mine' = only while "created by me" is on, 'visible' = always, false = never
+    comment_stats = 'mine',
+  },
+  detail = {
+    comment_order = 'newest', -- 'newest' (newest threads first; replies do not move them) | 'oldest'
+  },
   -- Each keymap value is a lhs string, a list of lhs strings, or false to disable.
   keymaps = {
     global = {
@@ -48,6 +56,7 @@ M.defaults = {
       comment = 'c',
       vote = 'v',
       checkout = 'C',
+      diff = 'D', -- diffview.nvim: target...source
       help = '?',
       close = 'q',
     },
@@ -63,6 +72,9 @@ M.defaults = {
       -- not 'v' / 'y' / 'gv': the detail buffer is read-only text, keep visual mode, reselect
       -- and the yank operator; 'A' (approve menu) has no meaning in a non-modifiable buffer
       vote = 'A',
+      diff = 'D', -- diffview.nvim: target...source
+      requeue = 'Q', -- re-queue the build policy under the cursor (or pick one)
+      run_pipeline = 'gQ', -- pick a pipeline and run it on the PR
       browser = 'o',
       yank_url = 'gy',
       refresh = 'R',

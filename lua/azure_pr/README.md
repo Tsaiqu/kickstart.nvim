@@ -25,7 +25,9 @@ Run `:checkhealth azure_pr` to verify the setup.
    > **Personal access tokens** > **New Token**.
 2. Pick the organization, an expiration date and **Custom defined** scopes:
    - **Code: Read & Write** - required (PRs, threads, comments, votes).
-   - Optionally **Build: Read** if you want build statuses that need it.
+   - Optionally **Build: Read & execute** to run pipelines on a PR (`gQ`) and to show the pipeline
+     name of build policies that have no display name. Re-queueing a build policy (`Q`) only needs
+     the Code scope.
 3. Copy the token and make it available to Neovim, in order of preference:
    - a password manager command: `pat_cmd = { 'pass', 'show', 'azure/pat' }`
    - an environment variable: `export AZURE_DEVOPS_PAT=...` (also `AZURE_DEVOPS_EXT_PAT`,
@@ -69,7 +71,11 @@ require('azure_pr').setup {
   default_filters = {},      -- e.g. { draft = false }
   date_format = '%Y-%m-%d %H:%M',
   icons = true,              -- nerd-font icons; false = ASCII
-  list = { layout = 'tab' }, -- tab | split | vsplit | current
+  list = {
+    layout = 'tab',          -- tab | split | vsplit | current
+    comment_stats = 'mine',  -- comment column: 'mine' (with "created by me") | 'visible' | false
+  },
+  detail = { comment_order = 'newest' }, -- 'newest' (newest threads first) | 'oldest'
   keymaps = { global = {...}, list = {...}, detail = {...} }, -- see below
 }
 ```
@@ -119,6 +125,14 @@ source branch, you are asked to confirm before the editor opens.
 
 ## PR list (`azure-pr://prs`)
 
+With `list.comment_stats` (default `'mine'`: only while the "created by me" filter is on, e.g.
+`:AzurePR mine`) each row also shows the number of comments and how many comment threads are
+resolved, e.g. `12  8/10 resolved` (green when all are resolved). The counts load in the
+background, one threads request per shown PR (4 at a time): `…` while loading, `?` when the
+request failed. Threads without a status and system threads (votes, policy updates) are not
+counted. `R` reloads them; the detail view updates them when it loads the PR's threads. Use
+`'visible'` to show the column in every list (one request per shown PR), `false` to turn it off.
+
 | Key | Action (config name) |
 | --- | --- |
 | `<CR>` | Open PR detail / toggle group on a group line (`open`) |
@@ -136,13 +150,46 @@ source branch, you are asked to confirm before the editor opens.
 | `c` | New general comment (`comment`) |
 | `v` | Vote (`vote`) |
 | `C` | Checkout source branch, after confirmation (`checkout`) |
+| `D` | Show the PR diff in diffview (`diff`, see below) |
 | `?` | Help (`help`) |
 | `q` | Close (`close`) |
 
 ## PR detail (`azure-pr://pr/<id>`)
 
-Shows title, status, author, repository, branches, merge status, reviewers with votes,
-checks (build statuses and branch policies), description and comment threads with replies.
+Shows title, status, author, repository, branches, reviewers with votes, merge readiness, checks,
+description and comment threads with replies, laid out like the PR page in Azure DevOps:
+
+```
+Merge readiness
+  ! Waiting for reviewers to approve  1 of 2 approvals - required: Piotr
+  + No merge conflicts
+  x 4 of 5 checks passed
+
+Checks (4/5)
+  Required
+    + CHECK LINTING ISSUES       CHECK LINTING ISSUES succeeded  Q re-queue
+    + TEST AND BUILD             TEST AND BUILD succeeded        Q re-queue
+    x Comments must be resolved  Failed
+  Optional
+    + TRIVY SCAN                 Build succeeded                 Q re-queue
+
+Comments  1 active - 1/2 resolved - newest first
+
+v * Active - src/export.ts:42
+    > Piotr - 2h ago
+      Ta pętla gubi ostatni wiersz.
+      \ Kamil - 10m ago (you)
+        Poprawione.
+```
+
+- **Merge readiness**: the reviewer requirement (from the *Minimum number of reviewers* and
+  *Required reviewers* policies, or the votes when there are none), merge conflicts and a check count.
+- **Checks**: branch policies split into *Required* / *Optional* like Azure's Checks panel (build,
+  comment resolution, work item linking, status policies) plus PR statuses no status policy covers.
+  Policies that do not apply to the PR are hidden. Build policies can be re-queued.
+- **Comments**: the newest threads first, by when they were started: a new reply is added to its
+  thread without moving it. Azure's status names (*Active*, *Resolved*, *Won't fix*, ...); replies
+  keep their chronological order inside a thread.
 
 | Key | Action (config name) |
 | --- | --- |
@@ -153,9 +200,12 @@ checks (build statuses and branch policies), description and comment threads wit
 | `s` | Change thread status: active, fixed, wontFix, closed, byDesign, pending (`thread_status`) |
 | `t` | Show / hide resolved threads (`toggle_resolved`) |
 | `za` | Fold thread (`toggle_thread`) |
-| `<CR>` | Open the file of a file-anchored thread at its line (`open_file`) |
+| `<CR>` | Open the file of a file-anchored thread at its line; on a check, open its build (`open_file`) |
+| `Q` | Re-queue the build policy under the cursor, or pick one (`requeue`); asks for confirmation |
+| `gQ` | Pick a pipeline of the repository and run it on the PR's merge ref (`run_pipeline`); asks for confirmation, needs Build: Read & execute |
 | `[t`, `]t` | Previous / next thread (`prev_thread`, `next_thread`) |
 | `A` | Vote: approve, approve with suggestions, wait for author, reject, reset (`vote`) |
+| `D` | Show the PR diff in diffview (`diff`) |
 | `o` / `gy` | Open in browser / yank URL (`browser`, `yank_url`) |
 | `R` | Refresh (`refresh`) |
 | `?` / `q` | Help / close (`help`, `close`) |
@@ -166,6 +216,15 @@ Threads anchored on the base (left) side of the diff, e.g. comments on deleted l
 as `path:12 (base)`; `<CR>` opens the file but does not jump, since the line number belongs to the
 target branch version. For other file threads `<CR>` warns when the checked-out branch is not the
 PR's source branch (line numbers may differ; `C` checks it out).
+
+### PR diff (`D`)
+
+Requires [diffview.nvim](https://github.com/sindrets/diffview.nvim). Run from a clone of the PR's
+repository (cwd; a clone of another repository is refused). `D` fetches both branches from `origin`
+and opens `:DiffviewOpen <target>...<source>` - the diff against the merge base, like Azure's
+**Files** tab. The working tree and the checked-out branch are not touched. Each side uses the
+PR's last-merge commit when available, else `origin/<branch>`; a commit missing locally (e.g. the
+deleted source branch of a completed PR) is fetched by id. Close with `:DiffviewClose`.
 
 Every keymap value accepts a string, a list of strings, or `false`:
 

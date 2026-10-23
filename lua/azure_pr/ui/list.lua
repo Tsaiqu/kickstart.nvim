@@ -26,7 +26,12 @@ local view = {
   loaded = false, -- at least one successful fetch for the current status
   truncated = false, -- last fetch hit config.max_prs
   scope = nil, ---@type string|nil server-side scope of the loaded PRs: nil (all) | 'creator' | 'reviewer'
+  visible = {}, ---@type AzurePR[] PRs that passed the filters in the last build
 }
+
+-- Background loading of the comment column (`pr.comment_stats`, one threads request per PR).
+local STATS_CONCURRENCY = 4
+local stats = { queue = {}, inflight = 0, render_pending = false }
 
 --- Server-side narrowing implied by the "me" filters (so max_prs does not hide relevant PRs).
 ---@param f AzurePRFilters|nil
@@ -192,6 +197,7 @@ function M.build(width)
   end
   local ctx = { user_id = user_id() }
   local prs = filter.apply(state.prs or {}, state.filters or {}, ctx)
+  view.visible = prs
   local groups = filter.group(prs, state.group_by, ctx)
   return render.pr_list(groups, {
     collapsed = state.collapsed or {},
@@ -203,6 +209,76 @@ function M.build(width)
     width = width,
     hints = render.hints('list', (config.get().keymaps or {}).list),
   })
+end
+
+--------------------------------------------------------------------------------
+-- Comment stats
+--------------------------------------------------------------------------------
+
+local function stats_wanted()
+  local mode = (config.get().list or {}).comment_stats
+  if mode == 'visible' then
+    return true
+  elseif mode == 'mine' then
+    return (state.filters or {}).created_by_me == true
+  end
+  return false
+end
+
+--- Coalesce the re-renders of many stats responses into one.
+local function schedule_render()
+  if stats.render_pending then
+    return
+  end
+  stats.render_pending = true
+  vim.defer_fn(function()
+    stats.render_pending = false
+    M.render()
+  end, 30)
+end
+
+--- Update the stats of PR `id` from normalized `threads`: called by the detail view, so the list
+--- follows comments / status changes made there. Re-renders when something changed.
+---@param id integer
+---@param threads table[] normalized, non-system threads
+function M.set_comment_stats(id, threads)
+  local s = models.thread_stats(threads)
+  for _, pr in ipairs(state.prs or {}) do
+    -- only PRs whose stats were requested: do not make the column appear for a single PR
+    if pr.id == id and pr.comment_stats and not vim.deep_equal(pr.comment_stats, s) then
+      pr.comment_stats = s
+      schedule_render()
+    end
+  end
+end
+
+local function pump()
+  while stats.inflight < STATS_CONCURRENCY and #stats.queue > 0 do
+    local pr = table.remove(stats.queue, 1)
+    stats.inflight = stats.inflight + 1
+    api.list_threads(pr.repository.id, pr.id, function(err, raws)
+      stats.inflight = stats.inflight - 1
+      pr.stats_loading = nil
+      -- an error is kept (shown as '?') so it is not retried on every render; R refetches
+      pr.comment_stats = err and { error = tostring(err) } or models.thread_stats(models.normalize_threads(raws or {}))
+      schedule_render()
+      pump()
+    end)
+  end
+end
+
+--- Queue the visible PRs that have no stats yet.
+local function load_stats()
+  if not view.loaded or view.loading or not stats_wanted() then
+    return
+  end
+  for _, pr in ipairs(view.visible or {}) do
+    if not pr.comment_stats and not pr.stats_loading and pr.repository and pr.repository.id then
+      pr.stats_loading = true
+      table.insert(stats.queue, pr)
+    end
+  end
+  pump()
 end
 
 --- Re-render the list buffer from state (no fetching). Keeps the cursor on the same PR.
@@ -246,6 +322,7 @@ function M.render()
       pcall(vim.api.nvim_win_set_cursor, w, { math.min(lnum, #res.lines), 0 })
     end
   end
+  load_stats()
 end
 
 --------------------------------------------------------------------------------
@@ -260,6 +337,11 @@ function M.fetch(cb)
   view.seq = view.seq + 1
   local seq = view.seq
   view.loading = true
+  -- the queued PRs are about to be replaced; requests in flight finish on the old objects
+  for _, pr in ipairs(stats.queue) do
+    pr.stats_loading = nil
+  end
+  stats.queue = {}
   M.render()
 
   local pending = 2
@@ -778,6 +860,13 @@ M.KEYMAP_ACTIONS = {
     function()
       -- actions.checkout asks for confirmation before running git
       with_action 'checkout'
+    end,
+  },
+  {
+    'diff',
+    'Show PR diff (diffview)',
+    function()
+      with_action 'diff'
     end,
   },
   {

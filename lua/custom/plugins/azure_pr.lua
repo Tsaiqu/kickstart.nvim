@@ -6,7 +6,7 @@ require('azure_pr').setup {
   -- organization = 'myorg', -- auto-detected from `git remote get-url origin` when nil
   -- project = 'MyProject',
   -- repositories = { 'repo-a', 'repo-b' },
-  -- pat_cmd = { 'pass', 'show', 'azure/pat' },
+  pat_cmd = { 'pass', 'show', 'azure/pat' },
 }
 
 return {}

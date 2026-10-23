@@ -34,12 +34,18 @@ local function setup(opts)
     'vote',
     'list_pull_requests',
     'get_pull_request_by_id',
+    'requeue_policy_evaluation',
+    'list_build_definitions',
+    'queue_build',
   } do
     api_mock[name] = recorder(name)
   end
   api_mock.get_current_user = function(cb)
     table.insert(ctx.calls, { name = 'get_current_user', args = {} })
     cb(nil, ME)
+  end
+  api_mock.build_web_url = function(id)
+    return 'https://dev.azure.com/org/proj/_build/results?buildId=' .. id
   end
   api_mock.web_url = function(pr)
     return 'https://dev.azure.com/org/proj/_git/' .. pr.repository.name .. '/pullrequest/' .. pr.id
@@ -460,6 +466,214 @@ describe('actions.yank_url / open_in_browser', function()
     teardown()
     truthy(has_note('no handler found', vim.log.levels.ERROR))
     truthy(has_note('https://x/pr/1', vim.log.levels.ERROR))
+  end)
+end)
+
+describe('actions.requeue_check', function()
+  local build = { name = 'TEST AND BUILD', label = 'TEST AND BUILD failed', state = 'rejected', evaluation_id = 'ev-1', can_requeue = true }
+  local comments = { name = 'Comments must be resolved', label = 'Failed', state = 'rejected', evaluation_id = 'ev-2' }
+
+  it('re-queues the check under the cursor after confirmation', function()
+    local actions = setup {}
+    local done
+    actions.requeue_check(pr(), build, nil, function(err)
+      done = { err = err }
+    end)
+    teardown()
+    eq({ 'Re-queue TEST AND BUILD on !42 Add feature?' }, ctx.confirms)
+    eq({ { name = 'requeue_policy_evaluation', args = { 'ev-1' } } }, ctx.calls)
+    eq({}, done)
+    contains(ctx.notes[#ctx.notes].msg, 'Re-queued TEST AND BUILD')
+  end)
+
+  it('does nothing when not confirmed, or for non-build checks', function()
+    local actions = setup { confirm = false }
+    actions.requeue_check(pr(), build)
+    eq({}, ctx.calls)
+    actions.requeue_check(pr(), comments)
+    teardown()
+    eq({}, ctx.calls)
+    contains(ctx.notes[1].msg, 'not a build policy')
+  end)
+
+  it('offers a picker over the build checks without a check under the cursor', function()
+    local actions = setup {
+      select = function(items)
+        return items[1]
+      end,
+    }
+    actions.requeue_check(pr(), nil, { comments, build })
+    teardown()
+    eq(1, #ctx.selects[1].items, 'only build policies are offered')
+    eq('TEST AND BUILD  (TEST AND BUILD failed)', ctx.selects[1].labels[1])
+    eq('requeue_policy_evaluation', ctx.calls[1].name)
+    -- none to offer / not active
+    actions = setup {}
+    actions.requeue_check(pr(), nil, { comments })
+    actions.requeue_check(pr { status = 'completed' }, build)
+    teardown()
+    eq({}, ctx.calls)
+    contains(ctx.notes[1].msg, 'no build policies')
+    contains(ctx.notes[2].msg, 'completed')
+  end)
+end)
+
+describe('actions.run_pipeline', function()
+  local defs = { { id = 7, name = 'ci', path = '\\' }, { id = 9, name = 'trivy', path = '\\security' } }
+
+  it('lists pipelines, confirms and queues one on the merge ref', function()
+    local actions = setup {
+      responses = { list_build_definitions = { result = defs }, queue_build = { result = { id = 1, buildNumber = '20240310.1', _links = { web = { href = 'https://b/1' } } } } },
+      select = function(items)
+        return items[2]
+      end,
+    }
+    local done
+    actions.run_pipeline(pr(), function(err, b)
+      done = { err = err, id = b and b.id }
+    end)
+    teardown()
+    eq({ 'REPO-ID' }, ctx.calls[1].args)
+    eq({ 'ci', 'security\\trivy' }, ctx.selects[1].labels)
+    eq({ 'Run trivy on refs/pull/42/merge?' }, ctx.confirms)
+    eq({ name = 'queue_build', args = { 9, 'refs/pull/42/merge' } }, ctx.calls[2])
+    eq({ id = 1 }, done)
+    contains(ctx.notes[#ctx.notes].msg, 'Queued trivy #20240310.1: https://b/1')
+  end)
+
+  it('uses the source branch for a closed PR and reports a missing Build scope', function()
+    local actions = setup {
+      responses = { list_build_definitions = { result = defs } },
+      select = function(items)
+        return items[1]
+      end,
+    }
+    actions.run_pipeline(pr { status = 'completed' })
+    teardown()
+    eq({ 7, 'refs/heads/feature/x' }, ctx.calls[2].args)
+
+    actions = setup { responses = { list_build_definitions = { err = 'HTTP 401' } } }
+    actions.run_pipeline(pr())
+    teardown()
+    eq(1, #ctx.calls)
+    contains(ctx.notes[1].msg, 'Build: Read & execute')
+  end)
+end)
+
+describe('actions.open_check', function()
+  it('opens the build of a check, or warns', function()
+    local actions = setup {}
+    local opened = {}
+    actions.open_url = function(url)
+      table.insert(opened, url)
+    end
+    actions.open_check { name = 'b', build_id = 501 }
+    actions.open_check { name = 's', url = 'https://ci/x' }
+    actions.open_check { name = 'Comments must be resolved' }
+    teardown()
+    eq({ 'https://dev.azure.com/org/proj/_build/results?buildId=501', 'https://ci/x' }, opened)
+    contains(ctx.notes[1].msg, 'no build or link')
+  end)
+end)
+
+describe('actions.diff', function()
+  local REMOTE = 'remote get-url origin'
+  local FETCH = 'fetch origin +refs/heads/main:refs/remotes/origin/main +refs/heads/feature/x:refs/remotes/origin/feature/x'
+  local function verify(rev)
+    return 'rev-parse --verify --quiet ' .. rev .. '^{commit}'
+  end
+
+  local function run(git, over)
+    local actions = setup { git = git }
+    local opened = {}
+    actions._has_diffview = function()
+      return true
+    end
+    actions._open_diffview = function(range)
+      table.insert(opened, range)
+    end
+    local done
+    actions.diff(pr(over), function(err, range)
+      done = { err = err, range = range }
+    end)
+    teardown()
+    return done, opened
+  end
+
+  it('fetches both branches and opens the last-merge commits', function()
+    local done, opened = run({
+      [REMOTE] = { 0, 'https://dev.azure.com/org/proj/_git/web\n' },
+      [FETCH] = { 0 },
+      [verify 'tgt1'] = { 0 },
+      [verify 'src1'] = { 0 },
+    }, { source_commit = 'src1', target_commit = 'tgt1' })
+    eq({ range = 'tgt1...src1' }, done)
+    eq({ 'tgt1...src1' }, opened)
+    eq({ REMOTE, FETCH, verify 'tgt1', verify 'src1' }, ctx.git)
+  end)
+
+  it('falls back to origin/<branch> without commit ids', function()
+    local done = run {
+      [REMOTE] = { 0, 'https://dev.azure.com/org/proj/_git/web\n' },
+      [FETCH] = { 0 },
+      [verify 'origin/main'] = { 0 },
+      [verify 'origin/feature/x'] = { 0 },
+    }
+    eq({ range = 'origin/main...origin/feature/x' }, done)
+  end)
+
+  it('fetches a missing commit by id when the branch is gone', function()
+    local fetched = false
+    local git = {
+      [REMOTE] = { 0, 'https://dev.azure.com/org/proj/_git/web\n' },
+      [FETCH] = { 128, '', "fatal: couldn't find remote ref refs/heads/feature/x" },
+      [verify 'tgt1'] = { 0 },
+    }
+    setmetatable(git, {
+      __index = function(_, key)
+        if key == 'fetch origin src1' then
+          fetched = true
+          return { 0 }
+        end
+        if key == verify 'src1' then
+          return fetched and { 0 } or { 1 }
+        end
+      end,
+    })
+    local done = run(git, { source_commit = 'src1', target_commit = 'tgt1' })
+    eq({ range = 'tgt1...src1' }, done)
+    eq({ REMOTE, FETCH, verify 'tgt1', verify 'src1', verify 'origin/feature/x', 'fetch origin src1', verify 'src1' }, ctx.git)
+  end)
+
+  it('reports the fetch error when a side cannot be resolved', function()
+    local done, opened = run({
+      [REMOTE] = { 0, 'https://dev.azure.com/org/proj/_git/web\n' },
+      [FETCH] = { 128, '', "fatal: couldn't find remote ref refs/heads/feature/x" },
+      [verify 'tgt1'] = { 0 },
+    }, { source_commit = 'src1', target_commit = 'tgt1' })
+    contains(done.err, 'cannot find feature/x')
+    contains(done.err, "couldn't find remote ref")
+    eq({}, opened)
+  end)
+
+  it('refuses a clone of another repository', function()
+    local done, opened = run {
+      [REMOTE] = { 0, 'https://dev.azure.com/org/proj/_git/api\n' },
+    }
+    contains(done.err, 'clone of api')
+    eq({}, opened)
+    eq({ REMOTE }, ctx.git)
+  end)
+
+  it('reports a missing diffview', function()
+    local actions = setup {}
+    actions._has_diffview = function()
+      return false
+    end
+    actions.diff(pr())
+    teardown()
+    contains(ctx.notes[1].msg, 'diffview.nvim')
+    eq({}, ctx.git)
   end)
 end)
 

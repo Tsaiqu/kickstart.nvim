@@ -342,6 +342,62 @@ function M.list_policy_evaluations(project_id, pr_id, cb)
   end)
 end
 
+--- Re-queue a policy evaluation (PATCH, no body, like `az repos pr policy queue`). Only build
+--- policies act on it: a new build is queued, cancelling a running one. Scope: Code (Read & Write).
+---@param evaluation_id string
+function M.requeue_policy_evaluation(evaluation_id, cb)
+  with_target(cb, function(target)
+    request_data({
+      method = 'PATCH',
+      url = project_api(target) .. '/policy/evaluations/' .. enc(evaluation_id),
+      api_version = preview_version(1),
+    }, cb)
+  end)
+end
+
+--- Build pipelines (definitions) of a repository, by name -> list. Scope: Build (Read).
+---@param repo_id string repository GUID
+function M.list_build_definitions(repo_id, cb)
+  with_target(cb, function(target)
+    request_value({
+      method = 'GET',
+      url = project_api(target) .. '/build/definitions',
+      query = { repositoryId = repo_id, repositoryType = 'TfsGit', queryOrder = 'definitionNameAscending' },
+    }, cb)
+  end)
+end
+
+--- Queue a build of `definition_id` on `source_branch` (e.g. 'refs/pull/12/merge') -> raw build.
+--- Scope: Build (Read & execute).
+function M.queue_build(definition_id, source_branch, cb)
+  with_target(cb, function(target)
+    request_data({
+      method = 'POST',
+      url = project_api(target) .. '/build/builds',
+      body = { definition = { id = definition_id }, sourceBranch = source_branch },
+    }, cb)
+  end)
+end
+
+--- Web URL of a build's results page (synchronous, like web_url).
+---@param build_id integer|string
+---@param project string|nil project name (default: target project)
+---@return string|nil
+function M.build_web_url(build_id, project)
+  local target = M._target
+  if not target then
+    local ok, cfg = pcall(function()
+      return config().get()
+    end)
+    target = ok and cfg and cfg.organization and cfg.project and cfg or nil
+  end
+  project = project or (target and target.project)
+  if not target or not project or not build_id then
+    return nil
+  end
+  return string.format('%s/%s/_build/results?buildId=%s', http.root_url(target), enc(project), enc(build_id))
+end
+
 --- Current authenticated user -> `{ id, name, unique_name }` (cached).
 function M.get_current_user(cb)
   if M._user then

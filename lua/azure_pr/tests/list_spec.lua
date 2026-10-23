@@ -55,6 +55,18 @@ local function setup(cfg)
       end
     end, ctx.delay)
   end
+  ctx.thread_calls, ctx.threads = {}, {}
+  api.list_threads = function(repo_id, pr_id, cb)
+    table.insert(ctx.thread_calls, pr_id)
+    local r = ctx.threads[pr_id] or {}
+    vim.schedule(function()
+      if r.err then
+        cb(r.err)
+      else
+        cb(nil, vim.deepcopy(r))
+      end
+    end)
+  end
   local function recorder(name)
     return function(...)
       table.insert(ctx.actions, { name = name, args = { ... } })
@@ -691,3 +703,76 @@ describe('ui.list (review fixes)', function()
 end)
 
 vim.ui.select, vim.ui.input, vim.notify = orig_select, orig_input, orig_notify
+
+describe('ui.list comment stats', function()
+  local function line_of(ctx, id)
+    return ctx.lines()[ctx.pr_line(id)]
+  end
+  local function wait_stats(ctx, ids)
+    return wait_for(function()
+      for _, id in ipairs(ids) do
+        local l = ctx.pr_line(id) and line_of(ctx, id)
+        if not l or not (l:find('resolved', 1, true) or l:find('?', 1, true) or l:find('* 0', 1, true)) then
+          return false
+        end
+      end
+      return true
+    end, 2000)
+  end
+
+  it('loads threads of my PRs and shows comments and resolved/total', function()
+    local ctx = setup()
+    ctx.threads[102] = F.threads()
+    ctx.threads[104] = { err = 'HTTP 500' }
+    ctx.list.open { filters = { created_by_me = true }, group_by = 'none' }
+    ctx.wait_loaded()
+    truthy(wait_stats(ctx, { 102, 104 }), 'stats rendered')
+    table.sort(ctx.thread_calls)
+    eq({ 102, 104 }, ctx.thread_calls)
+    contains(line_of(ctx, 102), '* 4  2/3 resolved')
+    contains(line_of(ctx, 104), '?')
+    -- re-rendering (e.g. a filter change) does not refetch
+    ctx.list.render()
+    eq(2, #ctx.thread_calls)
+  end)
+
+  it('does not load stats outside "mine" by default, or at all when disabled', function()
+    local ctx = setup()
+    ctx.list.open { group_by = 'none' }
+    ctx.wait_loaded()
+    vim.wait(50)
+    eq({}, ctx.thread_calls)
+    falsy(ctx.text():find('resolved', 1, true))
+
+    ctx = setup { list = { comment_stats = false } }
+    ctx.list.open { filters = { created_by_me = true }, group_by = 'none' }
+    ctx.wait_loaded()
+    vim.wait(50)
+    eq({}, ctx.thread_calls)
+  end)
+
+  it("loads every shown PR with comment_stats = 'visible'", function()
+    local ctx = setup { list = { comment_stats = 'visible' } }
+    ctx.list.open { group_by = 'none' }
+    ctx.wait_loaded()
+    local n = #ctx.shown_ids()
+    truthy(wait_for(function()
+      return #ctx.thread_calls == n
+    end, 2000), 'one request per shown PR')
+  end)
+
+  it('the detail view updates the stats of a loaded PR', function()
+    local ctx = setup()
+    ctx.threads[102] = F.threads()
+    ctx.list.open { filters = { created_by_me = true }, group_by = 'none' }
+    ctx.wait_loaded()
+    truthy(wait_stats(ctx, { 102 }))
+    local models = require 'azure_pr.models'
+    local threads = models.normalize_threads(F.threads())
+    threads[2].status = 'fixed' -- the detail view resolved the last active thread
+    ctx.list.set_comment_stats(102, threads)
+    truthy(wait_for(function()
+      return line_of(ctx, 102):find('3/3 resolved', 1, true) ~= nil
+    end, 2000))
+  end)
+end)
