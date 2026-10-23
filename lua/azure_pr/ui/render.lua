@@ -447,6 +447,17 @@ end
 -- PR detail
 --------------------------------------------------------------------------------
 
+-- thread status -> label used by Azure DevOps
+M.THREAD_STATUS_LABEL = {
+  active = 'Active',
+  pending = 'Pending',
+  fixed = 'Resolved',
+  wontFix = "Won't fix",
+  closed = 'Closed',
+  byDesign = 'By design',
+  unknown = 'Comment',
+}
+
 local OPEN_STATUSES = { active = true, pending = true, unknown = true }
 
 local function is_open(thread)
@@ -464,66 +475,14 @@ local CHECK_STYLE = {
   pending = { 'waiting', 'AzurePRWaiting' },
   running = { 'waiting', 'AzurePRWaiting' },
   queued = { 'waiting', 'AzurePRWaiting' },
+  expired = { 'waiting', 'AzurePRWaiting' },
   notApplicable = { 'no_vote', 'AzurePRMuted' },
   notSet = { 'no_vote', 'AzurePRMuted' },
 }
 
-local function status_check(s)
-  local name = s.name
-  if not name and s.context then
-    name = s.context.genre and s.context.genre ~= '' and (s.context.genre .. '/' .. (s.context.name or '')) or s.context.name
-  end
-  name = name or s.description or 'status'
-  return { name = name, state = s.state or s.status or 'notSet', description = s.context and s.description or nil }
-end
-
---- The statuses endpoint returns the whole history (every post, every iteration). Keep only the
---- latest status per context (genre/name): highest iterationId, then latest updated/creation date,
---- then highest id. Order of first appearance is preserved.
----@param statuses table[]|nil raw GitPullRequestStatus list
----@return table[]
-function M.latest_statuses(statuses)
-  local order, best = {}, {}
-  local function newer(a, b)
-    local ia, ib = tonumber(a.iterationId) or 0, tonumber(b.iterationId) or 0
-    if ia ~= ib then
-      return ia > ib
-    end
-    -- ISO 8601 timestamps compare correctly as strings
-    local da, db = tostring(a.updatedDate or a.creationDate or ''), tostring(b.updatedDate or b.creationDate or '')
-    if da ~= db then
-      return da > db
-    end
-    return (tonumber(a.id) or 0) > (tonumber(b.id) or 0)
-  end
-  for i, s in ipairs(statuses or {}) do
-    local key
-    if type(s.context) == 'table' then
-      key = (s.context.genre or '') .. '/' .. (s.context.name or '')
-    else
-      key = '#' .. i -- no context: cannot tell what it supersedes, keep it
-    end
-    if not best[key] then
-      order[#order + 1] = key
-      best[key] = s
-    elseif newer(s, best[key]) then
-      best[key] = s
-    end
-  end
-  local out = {}
-  for _, k in ipairs(order) do
-    out[#out + 1] = best[k]
-  end
-  return out
-end
-
-local function policy_check(p)
-  local name = p.name
-  local cfg = p.configuration
-  if not name and cfg then
-    name = (cfg.settings and cfg.settings.displayName) or (cfg.type and cfg.type.displayName)
-  end
-  return { name = name or 'policy', state = p.status or p.state or 'notSet', is_blocking = cfg and cfg.isBlocking }
+-- kept here for callers / tests that used it before it moved to models
+M.latest_statuses = function(statuses)
+  return require('azure_pr.models').latest_statuses(statuses)
 end
 
 --- Build comment tree order: list of { comment, depth } (depth-first by parent_id).
@@ -630,13 +589,6 @@ function M.pr_detail(pr, threads, opts)
   if pr.closed_at then
     meta[#meta + 1] = { 'Closed', { { os.date(date_format(opts), pr.closed_at) } } }
   end
-  if pr.merge_status and pr.merge_status ~= '' then
-    local ms = pr.merge_status
-    local hl = (ms == 'succeeded') and 'AzurePRApproved'
-      or (ms == 'conflicts' or ms == 'failure' or ms == 'rejectedByPolicy') and 'AzurePRRejected'
-      or 'AzurePRMuted'
-    meta[#meta + 1] = { 'Merge', { { oneline(ms), hl } } }
-  end
   if pr.labels and #pr.labels > 0 then
     meta[#meta + 1] = { 'Labels', { { oneline(table.concat(pr.labels, ', ')), 'AzurePRKey' } } }
   end
@@ -695,29 +647,65 @@ function M.pr_detail(pr, threads, opts)
     end
   end
 
-  -- checks
-  local checks = {}
-  for _, s in ipairs(M.latest_statuses(opts.statuses)) do
-    checks[#checks + 1] = status_check(s)
-  end
-  for _, p in ipairs(opts.policies or {}) do
-    checks[#checks + 1] = policy_check(p)
-  end
-  if #checks > 0 then
-    b.blank()
-    b.add({ { 'Checks', 'AzurePRHeader' }, { ' (' .. #checks .. ')', 'AzurePRMuted' } }, { kind = 'section', section = 'checks', pr = pr })
-    local name_w = 0
-    for _, c in ipairs(checks) do
-      c.name = truncate(oneline(c.name), 50)
-      name_w = math.max(name_w, dw(c.name))
+  -- merge readiness (like the top of Azure's PR overview) and checks (Azure's "Checks" panel)
+  local km = opts.keymaps
+  local requeue_key = km == nil and 'Q' or first_lhs(km.requeue)
+  local ck = require('azure_pr.models').pr_checks(pr, opts.policies, opts.statuses, { definition_names = opts.definition_names })
+  local function summary_line(sum, item)
+    local st = CHECK_STYLE[sum.state] or { 'no_vote', 'AzurePRMuted' }
+    local segs = { { '  ' }, { icons[st[1]] or '?', st[2] }, { ' ' }, { sum.label, st[2] } }
+    if sum.details and #sum.details > 0 then
+      segs[#segs + 1] = { '  ' .. oneline(table.concat(sum.details, dot)), 'AzurePRMuted' }
     end
-    for _, c in ipairs(checks) do
-      local st = CHECK_STYLE[c.state] or { 'no_vote', 'AzurePRMuted' }
-      local segs = { { '  ' }, { icons[st[1]] or '?', st[2] }, { ' ' }, { pad(c.name, name_w) }, { '  ' }, { oneline(c.state), st[2] } }
-      if c.is_blocking == false then
-        segs[#segs + 1] = { '  (optional)', 'AzurePRMuted' }
+    b.add(segs, item)
+  end
+  b.blank()
+  b.add({ { 'Merge readiness', 'AzurePRHeader' } }, { kind = 'section', section = 'readiness', pr = pr })
+  summary_line(ck.reviewers, { kind = 'summary', summary = 'reviewers', pr = pr })
+  summary_line(ck.merge, { kind = 'summary', summary = 'merge', pr = pr })
+  if ck.total > 0 then
+    local state = 'approved'
+    for _, c in ipairs(ck.required) do
+      if c.state == 'rejected' or c.state == 'broken' then
+        state = 'rejected'
+      elseif c.state ~= 'approved' and state ~= 'rejected' then
+        state = 'running'
       end
-      b.add(segs, { kind = 'check', pr = pr, check = c })
+    end
+    summary_line({ state = state, label = string.format('%d of %d checks passed', ck.passed, ck.total) }, { kind = 'summary', summary = 'checks', pr = pr })
+
+    b.blank()
+    b.add({ { 'Checks', 'AzurePRHeader' }, { ' (' .. ck.passed .. '/' .. ck.total .. ')', 'AzurePRMuted' } }, { kind = 'section', section = 'checks', pr = pr })
+    local name_w, label_w = 0, 0
+    for _, list in ipairs { ck.required, ck.optional } do
+      for _, c in ipairs(list) do
+        c.name = truncate(oneline(c.name), 40)
+        c.label = truncate(oneline(c.label or ''), 50)
+        name_w = math.max(name_w, dw(c.name))
+        label_w = math.max(label_w, dw(c.label))
+      end
+    end
+    for _, group in ipairs { { 'Required', ck.required }, { 'Optional', ck.optional } } do
+      if #group[2] > 0 then
+        b.add({ { '  ' .. group[1], 'AzurePRGroup' } }, { kind = 'check_group', pr = pr })
+        for _, c in ipairs(group[2]) do
+          local st = CHECK_STYLE[c.state] or { 'no_vote', 'AzurePRMuted' }
+          local segs = {
+            { '    ' },
+            { icons[st[1]] or '?', st[2] },
+            { ' ' },
+            { pad(c.name, name_w) },
+            { '  ' },
+          }
+          if c.can_requeue and requeue_key then
+            segs[#segs + 1] = { pad(c.label, label_w), st[2] }
+            segs[#segs + 1] = { '  ' .. requeue_key .. ' re-queue', 'AzurePRMuted' }
+          else
+            segs[#segs + 1] = { c.label, st[2] }
+          end
+          b.add(segs, { kind = 'check', pr = pr, check = c })
+        end
+      end
     end
   end
 
@@ -733,9 +721,35 @@ function M.pr_detail(pr, threads, opts)
     end
   end
 
-  -- threads
-  local open_n, visible, hidden = 0, {}, 0
+  -- comments: newest threads first (opts.comment_order = 'oldest' keeps the chronological order).
+  -- Ordered by when the thread was started, so a new reply does not move its thread.
+  local function created(t)
+    if t.published_at then
+      return t.published_at
+    end
+    local first
+    for _, c in ipairs(t.comments or {}) do
+      if c.published_at and (not first or c.published_at < first) then
+        first = c.published_at
+      end
+    end
+    return first or 0
+  end
+  threads = vim.list_slice(threads)
+  if opts.comment_order ~= 'oldest' then
+    table.sort(threads, function(x, y)
+      local cx, cy = created(x), created(y)
+      if cx ~= cy then
+        return cx > cy
+      end
+      return (x.id or 0) > (y.id or 0)
+    end)
+  end
+  local open_n, visible, hidden, resolvable = 0, {}, 0, 0
   for _, t in ipairs(threads) do
+    if t.status ~= 'unknown' then
+      resolvable = resolvable + 1
+    end
     local o = is_open(t)
     if o then
       open_n = open_n + 1
@@ -747,8 +761,18 @@ function M.pr_detail(pr, threads, opts)
     end
   end
   b.blank()
-  b.add({ { 'Threads', 'AzurePRHeader' }, { ' (' .. open_n .. '/' .. #threads .. ')', 'AzurePRMuted' } }, { kind = 'section', section = 'threads', pr = pr })
-  local km = opts.keymaps
+  local counts = {}
+  if #threads > 0 then
+    local stats = require('azure_pr.models').thread_stats(threads)
+    counts[#counts + 1] = { '  ' .. open_n .. ' active', open_n > 0 and 'AzurePRThreadActive' or 'AzurePRMuted' }
+    if stats.threads > 0 then
+      counts[#counts + 1] = { dot .. stats.resolved .. '/' .. stats.threads .. ' resolved', stats.resolved == stats.threads and 'AzurePRThreadResolved' or 'AzurePRMuted' }
+    end
+    counts[#counts + 1] = { dot .. (opts.comment_order == 'oldest' and 'oldest first' or 'newest first'), 'AzurePRMuted' }
+  end
+  local header = { { 'Comments', 'AzurePRHeader' } }
+  vim.list_extend(header, counts)
+  b.add(header, { kind = 'section', section = 'threads', pr = pr })
   local comment_key = km == nil and 'c' or first_lhs(km.comment)
   local refresh_key = km == nil and 'R' or first_lhs(km.refresh)
   local resolved_key = km == nil and 't' or first_lhs(km.toggle_resolved)
@@ -790,8 +814,8 @@ function M.pr_detail(pr, threads, opts)
     local segs = {
       { (is_folded and icons.collapsed or icons.expanded) .. ' ', 'AzurePRGroup' },
       { (open and icons.thread_active or icons.thread_resolved) .. ' ', t_hl },
-      { '[' .. oneline(t.status or 'active') .. ']', t_hl },
-      { ' ' },
+      { M.THREAD_STATUS_LABEL[t.status or 'active'] or oneline(t.status), t_hl },
+      { dot, 'AzurePRMuted' },
     }
     if is_file then
       segs[#segs + 1] = { (icons.file or '#') .. ' ', 'AzurePRFile' }
@@ -813,7 +837,7 @@ function M.pr_detail(pr, threads, opts)
         local when = relative_time(c.published_at, now)
         local hsegs = {
           { indent },
-          { (icons.comment or '>') .. ' ', 'AzurePRMuted' },
+          { ((depth > 0 and icons.reply or icons.comment) or '>') .. ' ', 'AzurePRMuted' },
           { author, c.type == 'system' and 'AzurePRMuted' or 'AzurePRCommentAuthor' },
         }
         if when ~= '' then

@@ -285,6 +285,39 @@ describe('api', function()
     eq('7.1-preview.1', calls[2].api_version)
   end)
 
+  it('re-queues a policy evaluation, lists pipelines and queues a build', function()
+    local api, calls = setup {
+      responder = function(o)
+        if o.url:find('/build/definitions', 1, true) then
+          return nil, { value = { { id = 7, name = 'ci' } } }
+        end
+        return nil, { id = 99 }
+      end,
+    }
+    await(function(cb)
+      api.requeue_policy_evaluation('ev-1', cb)
+    end)
+    eq('PATCH', calls[1].method)
+    eq(P .. '/policy/evaluations/ev-1', calls[1].url)
+    eq('7.1-preview.1', calls[1].api_version)
+    eq(nil, calls[1].body)
+    local defs = await(function(cb)
+      api.list_build_definitions('repo-guid', cb)
+    end)
+    eq({ { id = 7, name = 'ci' } }, defs.result)
+    eq('GET', calls[2].method or 'GET')
+    eq(P .. '/build/definitions', calls[2].url)
+    eq({ repositoryId = 'repo-guid', repositoryType = 'TfsGit', queryOrder = 'definitionNameAscending' }, calls[2].query)
+    local build = await(function(cb)
+      api.queue_build(7, 'refs/pull/5/merge', cb)
+    end)
+    eq({ id = 99 }, build.result)
+    eq('POST', calls[3].method)
+    eq(P .. '/build/builds', calls[3].url)
+    eq({ definition = { id = 7 }, sourceBranch = 'refs/pull/5/merge' }, calls[3].body)
+    eq('https://dev.azure.com/org/My%20Proj/_build/results?buildId=501', api.build_web_url(501))
+  end)
+
   it('get_current_user parses connectionData and caches', function()
     local api, calls = setup {
       responder = function()

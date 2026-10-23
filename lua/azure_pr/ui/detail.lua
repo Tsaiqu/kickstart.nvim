@@ -20,6 +20,8 @@ local function api()
   return require 'azure_pr.api'
 end
 
+local load_definition_names -- defined with the loading code
+
 local function models()
   return require 'azure_pr.models'
 end
@@ -254,6 +256,8 @@ local function render(buf, opts)
     keymaps = km,
     threads_loading = not st.threads_loaded and not st.threads_error,
     threads_error = st.threads_error,
+    definition_names = st.definition_names,
+    comment_order = (cfg().detail or {}).comment_order,
   })
   set_lines(buf, res.lines)
   apply_highlights(buf, res.lines, res.highlights)
@@ -304,6 +308,40 @@ local function finish_pr(raw)
     pr.url = url
   end
   return pr
+end
+
+--- Build policies without a display name are shown by their pipeline name (as in Azure), which
+--- needs one extra request (Build: Read). Done once per buffer; a failure just keeps '#<id>'.
+function load_definition_names(buf, st)
+  if st.definition_names or st.definition_names_loading then
+    return
+  end
+  local missing = false
+  for _, p in ipairs(st.policies or {}) do
+    local settings = type(p.configuration) == 'table' and type(p.configuration.settings) == 'table' and p.configuration.settings or {}
+    if models().policy_kind(p) == 'build' and not settings.displayName and settings.buildDefinitionId then
+      missing = true
+      break
+    end
+  end
+  local repo_id = repo_id_of(st)
+  if not missing or not repo_id then
+    return
+  end
+  st.definition_names_loading = true
+  api().list_build_definitions(repo_id, function(err, defs)
+    st.definition_names_loading = nil
+    local names = {}
+    for _, d in ipairs((not err and defs) or {}) do
+      if d.id and d.name then
+        names[tonumber(d.id)] = d.name
+      end
+    end
+    st.definition_names = names
+    if M._states[buf] == st then
+      render(buf)
+    end
+  end)
 end
 
 --- Fetch everything for the buffer. PR, threads, statuses, policy evaluations and the current user
@@ -384,6 +422,7 @@ local function load(buf, done)
       if res.user then
         st.user_id = res.user.id
       end
+      load_definition_names(buf, st)
       render(buf)
       if done then
         done(res.pr_err)
@@ -666,6 +705,9 @@ function handlers.open_file()
     return
   end
   local thread, item = thread_under_cursor(buf)
+  if item and item.kind == 'check' then
+    return actions().open_check(item.check)
+  end
   if not thread or not thread.file_path or thread.file_path == '' then
     -- on a general thread header, <CR> folds like za
     if item and item.kind == 'thread' then
@@ -738,6 +780,29 @@ function handlers.diff()
   end
 end
 
+--- Checks of the PR as shown (for the re-queue picker).
+local function current_checks(st)
+  local ck = models().pr_checks(st.pr, st.policies, st.statuses, { definition_names = st.definition_names })
+  return vim.list_extend(vim.list_slice(ck.required), ck.optional)
+end
+
+function handlers.requeue()
+  local st, buf = current_state()
+  if not st or not st.pr then
+    return
+  end
+  local item = M.item_at(buf)
+  local check = item and item.kind == 'check' and item.check or nil
+  actions().requeue_check(st.pr, check, not check and current_checks(st) or nil, refresher(buf))
+end
+
+function handlers.run_pipeline()
+  local st, buf = current_state()
+  if st and st.pr then
+    actions().run_pipeline(st.pr, refresher(buf))
+  end
+end
+
 function handlers.browser()
   local st = current_state()
   if st and st.pr then
@@ -796,11 +861,13 @@ local KEY_DESCS = {
   { 'thread_status', 'Change thread status' },
   { 'toggle_resolved', 'Show / hide resolved threads' },
   { 'toggle_thread', 'Fold / unfold thread' },
-  { 'open_file', 'Open file at thread line' },
+  { 'open_file', 'Open file at thread line / build of a check' },
   { 'next_thread', 'Next thread' },
   { 'prev_thread', 'Previous thread' },
   { 'vote', 'Vote on PR' },
   { 'diff', 'Show PR diff (diffview)' },
+  { 'requeue', 'Re-queue build policy (check under cursor)' },
+  { 'run_pipeline', 'Run a pipeline on the PR' },
   { 'browser', 'Open in browser' },
   { 'yank_url', 'Yank PR URL' },
   { 'refresh', 'Refresh' },

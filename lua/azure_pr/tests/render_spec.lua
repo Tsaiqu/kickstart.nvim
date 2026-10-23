@@ -282,13 +282,35 @@ describe('render.pr_detail', function()
     },
   }
   local statuses = { { state = 'succeeded', description = 'Build ok', context = { name = 'build', genre = 'ci' } } }
+  local BUILD = { id = '0609b952-1397-4640-95ec-e00a01b2c241', displayName = 'Build' }
   local policies = {
-    { status = 'rejected', configuration = { isBlocking = true, type = { displayName = 'Minimum number of reviewers' } } },
-    { status = 'approved', configuration = { isBlocking = false, type = { displayName = 'Comment requirements' } } },
+    {
+      evaluationId = 'ev-min',
+      status = 'rejected',
+      configuration = { isBlocking = true, type = { displayName = 'Minimum number of reviewers' }, settings = { minimumApproverCount = 2 } },
+    },
+    { evaluationId = 'ev-com', status = 'rejected', configuration = { isBlocking = true, type = { id = 'C6A1889D-B943-4856-B76F-9E46BB6B0DF2' } } },
+    {
+      evaluationId = 'ev-lint',
+      status = 'approved',
+      context = { buildId = 501 },
+      configuration = { isBlocking = true, type = BUILD, settings = { buildDefinitionId = 7, displayName = 'CHECK LINTING ISSUES' } },
+    },
+    {
+      evaluationId = 'ev-trivy',
+      status = 'approved',
+      context = { buildId = 502 },
+      configuration = { isBlocking = false, type = BUILD, settings = { buildDefinitionId = 9 } },
+    },
+    { evaluationId = 'ev-na', status = 'notApplicable', configuration = { isBlocking = true, type = BUILD, settings = { buildDefinitionId = 11 } } },
   }
 
   local function do_render(o)
-    o = vim.tbl_extend('force', { now = NOW, icons = icons, user_id = 'me', statuses = statuses, policies = policies, date_format = '%Y' }, o or {})
+    o = vim.tbl_extend(
+      'force',
+      { now = NOW, icons = icons, user_id = 'me', statuses = statuses, policies = policies, date_format = '%Y', definition_names = { [9] = 'TRIVY SCAN' } },
+      o or {}
+    )
     local res = render.pr_detail(pr, threads, o)
     check_result(res)
     return res
@@ -301,7 +323,7 @@ describe('render.pr_detail', function()
     contains(res.lines[2], '? help')
     truthy(find_line(res, 'Status:'))
     contains(res.lines[find_line(res, 'Branches:')], 'feature/x -> main')
-    contains(res.lines[find_line(res, 'Merge:')], 'succeeded')
+    falsy(find_line(res, 'Merge:'), 'merge status moved to Merge readiness')
     contains(res.lines[find_line(res, 'URL:')], 'pullrequest/123')
     contains(res.lines[find_line(res, 'Author:')], 'Jan Kowalski')
     contains(res.lines[find_line(res, 'Review:')], 'Waiting for author')
@@ -325,14 +347,55 @@ describe('render.pr_detail', function()
     contains(res.lines[find_line(res, 'Team')], 'group')
   end)
 
-  it('renders checks and omits section when empty', function()
+  it('renders merge readiness like the Azure overview', function()
     local res = do_render()
-    truthy(find_line(res, 'Checks (3)'))
-    contains(res.lines[find_line(res, 'ci/build')], 'succeeded')
-    contains(res.lines[find_line(res, 'Minimum number of reviewers')], 'rejected')
-    contains(res.lines[find_line(res, 'Comment requirements')], 'optional')
+    local m = find_line(res, 'Merge readiness')
+    truthy(m)
+    -- reviewer policies feed the reviewers line, not the checks
+    contains(res.lines[m + 1], 'A reviewer is waiting for the author')
+    contains(res.lines[m + 1], '1 of 2 approvals')
+    eq('summary', res.items[m + 1].kind)
+    contains(res.lines[m + 2], 'No merge conflicts')
+    contains(res.lines[m + 3], '3 of 4 checks passed')
+    falsy(find_line(res, 'Minimum number of reviewers'))
+
+    local p2 = vim.deepcopy(pr)
+    p2.merge_status = 'conflicts'
+    p2.reviewers = { { id = 'u9', name = 'Anna', vote = 10 }, { id = 'u8', name = 'Piotr', vote = 0, is_required = true } }
+    p2.review_state = 'no_votes'
+    local res2 = render.pr_detail(p2, {}, { now = NOW, icons = icons })
+    check_result(res2)
+    contains(res2.lines[find_line(res2, 'Waiting for reviewers to approve')], '1 approval - required: Piotr')
+    truthy(find_line(res2, 'Merge conflicts'))
+    falsy(find_line(res2, 'checks passed'), 'no checks line without checks')
+  end)
+
+  it('renders checks grouped into Required / Optional, like Azure', function()
+    local res = do_render()
+    local c = find_line(res, 'Checks (3/4)')
+    truthy(c)
+    eq('  Required', res.lines[c + 1])
+    contains(res.lines[c + 2], 'Comments must be resolved')
+    contains(res.lines[c + 2], 'Failed')
+    contains(res.lines[c + 3], 'CHECK LINTING ISSUES')
+    contains(res.lines[c + 3], 'CHECK LINTING ISSUES succeeded')
+    contains(res.lines[c + 3], 'Q re-queue')
+    eq('check', res.items[c + 3].kind)
+    eq('ev-lint', res.items[c + 3].check.evaluation_id)
+    eq(501, res.items[c + 3].check.build_id)
+    falsy(res.lines[c + 2]:find('re-queue', 1, true), 'only build policies can be re-queued')
+    eq('  Optional', res.lines[c + 4])
+    -- a build policy without display name: pipeline name + "Build succeeded"
+    contains(res.lines[c + 5], 'TRIVY SCAN')
+    contains(res.lines[c + 5], 'Build succeeded')
+    contains(res.lines[c + 6], 'ci/build')
+    contains(res.lines[c + 6], 'Build ok')
+    -- not applicable policies are dropped
+    falsy(find_line(res, '#11'))
     local res2 = do_render { statuses = {}, policies = {} }
     falsy(find_line(res2, 'Checks'))
+    local res3 = do_render { keymaps = { requeue = false } }
+    falsy(find_line(res3, 're-queue'))
   end)
 
   it('renders description split into lines', function()
@@ -352,23 +415,30 @@ describe('render.pr_detail', function()
 
   it('renders threads with counts, locations and nested replies', function()
     local res = do_render()
-    truthy(find_line(res, 'Threads (2/3)'))
-    local t1 = find_line(res, '[active] General')
+    truthy(find_line(res, 'Comments  2 active - 1/3 resolved - newest first'))
+    local t1 = find_line(res, 'Active - General')
     truthy(t1)
     eq('thread', res.items[t1].kind)
     eq(1, res.items[t1].thread.id)
-    local t2 = find_line(res, '[fixed]')
+    local t2 = find_line(res, 'Resolved - ')
     contains(res.lines[t2], 'src/main.lua:42')
     falsy(res.lines[t2]:find('/src', 1, true))
-    contains(res.lines[find_line(res, '[pending]')], 'lua/x.lua:5-8')
+    local t3 = find_line(res, 'Pending - ')
+    contains(res.lines[t3], 'lua/x.lua:5-8')
+    -- newest threads first, by when they were started (replies do not move them):
+    -- #3 and #2 (1d ago, higher id first), then #1 (2d ago, despite a reply 1m ago)
+    truthy(t3 < t2 and t2 < t1)
+    local old = do_render { comment_order = 'oldest' }
+    truthy(find_line(old, 'Active - General') < find_line(old, 'Pending - '))
+    truthy(find_line(old, 'Comments  2 active - 1/3 resolved - oldest first'))
 
     local function indent(l)
       return #res.lines[l]:match '^( *)'
     end
     local top = find_line(res, 'Anna', t1)
-    local r1 = find_line(res, '> me', t1)
+    local r1 = find_line(res, '\\ me', t1)
     local nested = find_line(res, 'Nested reply', t1) - 1
-    local r2 = find_line(res, '> Bob', t1)
+    local r2 = find_line(res, '\\ Bob', t1)
     eq('comment', res.items[top].kind)
     eq(10, res.items[top].comment.id)
     eq(indent(top) + 2, indent(r1))
@@ -387,15 +457,15 @@ describe('render.pr_detail', function()
 
   it('hides resolved threads when show_resolved = false', function()
     local res = do_render { show_resolved = false }
-    falsy(find_line(res, '[fixed]'))
-    truthy(find_line(res, '[pending]'))
+    falsy(find_line(res, 'Resolved - '))
+    truthy(find_line(res, 'Pending - '))
     truthy(find_line(res, '1 resolved hidden'))
-    truthy(find_line(res, 'Threads (2/3)'))
+    truthy(find_line(res, 'Comments  2 active - 1/3 resolved'))
   end)
 
   it('folds threads', function()
     local res = do_render { folded = { [1] = true } }
-    local t1 = find_line(res, '[active] General')
+    local t1 = find_line(res, 'Active - General')
     contains(res.lines[t1], '(4 comments)')
     contains(res.lines[t1], '> ') -- collapsed icon in ascii
     truthy(res.items[t1].folded)
@@ -405,8 +475,8 @@ describe('render.pr_detail', function()
 
   it('thread status highlights', function()
     local res = do_render()
-    local t2 = find_line(res, '[fixed]')
-    local t1 = find_line(res, '[active]')
+    local t2 = find_line(res, 'Resolved - ')
+    local t1 = find_line(res, 'Active - ')
     local groups = {}
     for _, h in ipairs(res.highlights) do
       if h[1] == t2 - 1 or h[1] == t1 - 1 then
@@ -457,9 +527,10 @@ describe('render (review fixes)', function()
     eq(4, out[2].id)
     local res = render.pr_detail(pr, {}, { now = NOW, icons = icons, statuses = list })
     check_result(res)
-    truthy(find_line(res, 'Checks (2)'))
-    contains(res.lines[find_line(res, 'ci/build')], 'succeeded')
-    falsy(find_line(res, 'failed'))
+    truthy(find_line(res, 'Checks (1/2)'))
+    contains(res.lines[find_line(res, 'ci/build')], 'Succeeded')
+    contains(res.lines[find_line(res, 'lint')], 'Running')
+    falsy(find_line(res, 'Failed'))
   end)
 
   it('threads loading / error states instead of "No comments yet"', function()

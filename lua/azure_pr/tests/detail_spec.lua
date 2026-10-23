@@ -53,6 +53,9 @@ local function fake_api(resp)
   function A.get_current_user(cb)
     reply('get_current_user', cb)
   end
+  function A.list_build_definitions(repo_id, cb)
+    reply('list_build_definitions', cb, repo_id)
+  end
   function A.web_url(pr)
     return 'https://dev.azure.com/myorg/MyProject/_git/' .. (pr.repository and pr.repository.name or 'x') .. '/pullrequest/' .. tostring(pr.id)
   end
@@ -78,7 +81,7 @@ end
 local function fake_actions()
   local calls = {}
   local act = { calls = calls }
-  for _, name in ipairs { 'comment', 'reply', 'edit_comment', 'delete_comment', 'set_thread_status', 'vote', 'open_in_browser', 'yank_url' } do
+  for _, name in ipairs { 'comment', 'reply', 'edit_comment', 'delete_comment', 'set_thread_status', 'vote', 'open_in_browser', 'yank_url', 'requeue_check', 'run_pipeline', 'open_check' } do
     act[name] = function(...)
       table.insert(calls, { name = name, args = { ... } })
     end
@@ -194,9 +197,10 @@ describe('ui.detail', function()
     local text = table.concat(lines(buf), '\n')
     contains(text, 'Please add a test')
     contains(text, 'for the timeout path')
-    contains(text, 'Checks (2)')
+    contains(text, 'Checks (2/2)')
     contains(text, 'ci/build')
     contains(text, 'Minimum reviewers')
+    contains(text, 'Merge readiness')
     contains(text, 'Anna Nowak')
     contains(text, '(you)')
     eq(F.ME.id, detail.get_state(buf).user_id)
@@ -472,14 +476,15 @@ describe('ui.detail', function()
     local buf = detail.open(normalized_pr())
     truthy(loaded(detail, buf))
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    -- newest activity first: #15, #11, #12
     feed ']t'
-    eq(thread_line(buf, 12), vim.api.nvim_win_get_cursor(0)[1])
+    eq(thread_line(buf, 15), vim.api.nvim_win_get_cursor(0)[1])
     feed ']t'
     eq(thread_line(buf, 11), vim.api.nvim_win_get_cursor(0)[1])
     feed ']t'
-    eq(thread_line(buf, 15), vim.api.nvim_win_get_cursor(0)[1])
+    eq(thread_line(buf, 12), vim.api.nvim_win_get_cursor(0)[1])
     feed ']t' -- no next: stays
-    eq(thread_line(buf, 15), vim.api.nvim_win_get_cursor(0)[1])
+    eq(thread_line(buf, 12), vim.api.nvim_win_get_cursor(0)[1])
     feed '[t'
     eq(thread_line(buf, 11), vim.api.nvim_win_get_cursor(0)[1])
     restore()
@@ -492,13 +497,13 @@ describe('ui.detail', function()
     truthy(loaded(detail, buf))
     local l = comment_line(buf, 11, 1)
     vim.api.nvim_win_set_cursor(0, { l + 1, 0 }) -- second body line of Jan's comment
-    -- a new, earlier thread and a longer description push everything down
+    -- a new thread (newest, so shown first) and a longer description push everything down
     local threads = F.threads()
     table.insert(threads, {
       id = 20,
-      publishedDate = '2024-03-09T00:00:00Z',
+      publishedDate = '2024-03-20T00:00:00Z',
       status = 'active',
-      comments = { F.comment(1, F.ANNA, 'first!\nsecond line\nthird line', { publishedDate = '2024-03-09T00:00:00Z' }) },
+      comments = { F.comment(1, F.ANNA, 'first!\nsecond line\nthird line', { publishedDate = '2024-03-20T00:00:00Z' }) },
     })
     A.resp.list_threads = threads
     A.resp.get_pull_request = F.pr { description = 'one\ntwo\nthree\nfour\nfive' }
@@ -609,6 +614,53 @@ describe('ui.detail', function()
     feed '<CR>'
     truthy(detail.get_state(buf).folded[12])
     vim.fn.delete(dir, 'rf')
+    restore()
+  end)
+
+  it('checks: pipeline names, Q re-queues, gQ runs a pipeline, <CR> opens the build', function()
+    local resp = default_resp()
+    local BUILD = { id = '0609b952-1397-4640-95ec-e00a01b2c241', displayName = 'Build' }
+    resp.list_policy_evaluations = {
+      { evaluationId = 'ev-1', status = 'rejected', context = { buildId = 5 }, configuration = { isBlocking = true, type = BUILD, settings = { buildDefinitionId = 7 } } },
+    }
+    resp.list_build_definitions = { { id = 7, name = 'TEST AND BUILD' } }
+    local detail, A, act, _, restore = setup(resp)
+    local buf = detail.open(normalized_pr())
+    truthy(loaded(detail, buf))
+    truthy(wait_for(function()
+      return table.concat(lines(buf), '\n'):find('TEST AND BUILD', 1, true) ~= nil
+    end, 2000), 'pipeline name resolved')
+    eq(1, A.count 'list_build_definitions')
+    eq({ F.REPO_API.id }, A.find('list_build_definitions').args)
+    local l = find_line(buf, function(it)
+      return it and it.kind == 'check'
+    end)
+    contains(lines(buf)[l], 'Build failed')
+    contains(lines(buf)[l], 'Q re-queue')
+
+    vim.api.nvim_win_set_cursor(0, { l, 0 })
+    feed 'Q'
+    local call = act.last 'requeue_check'
+    eq(101, call.args[1].id)
+    eq('ev-1', call.args[2].evaluation_id)
+    eq(nil, call.args[3], 'no picker list with a check under the cursor')
+    feed '<CR>'
+    eq('ev-1', act.last('open_check').args[1].evaluation_id)
+
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    feed 'Q'
+    call = act.last 'requeue_check'
+    eq(nil, call.args[2])
+    eq('ev-1', call.args[3][1].evaluation_id, 'picker gets the PR checks')
+    feed 'gQ'
+    eq(101, act.last('run_pipeline').args[1].id)
+
+    -- a refresh does not look the pipeline names up again
+    feed 'R'
+    wait_for(function()
+      return A.count 'list_policy_evaluations' == 2 and not detail.get_state(buf).loading
+    end)
+    eq(1, A.count 'list_build_definitions')
     restore()
   end)
 

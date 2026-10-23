@@ -423,6 +423,12 @@ function M.open_in_browser(pr)
   if not url then
     return notify('Cannot determine the web URL of this pull request', levels.WARN)
   end
+  M.open_url(url)
+end
+
+--- Open `url` with vim.ui.open, reporting a missing or failing opener.
+---@param url string
+function M.open_url(url)
   -- vim.ui.open returns `nil, errmsg` (it does not throw) when no opener is found
   local ok, obj, oerr = pcall(vim.ui.open, url)
   if not ok or obj == nil then
@@ -530,6 +536,117 @@ function M.checkout(pr, cb)
       try(1)
     end)
   end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Checks: re-queue a build policy, run a pipeline, open a build
+-- ---------------------------------------------------------------------------
+
+--- Re-queue the build policy `check` (from models.pr_checks) after confirmation: Azure queues a
+--- new build, cancelling a running one. Without `check`, picks among the PR's build checks.
+---@param pr AzurePR
+---@param check table|nil
+---@param checks table[]|nil build checks to pick from when `check` is nil
+---@param cb fun(err: string|nil, result: any)|nil
+function M.requeue_check(pr, check, checks, cb)
+  if type(pr) ~= 'table' or not pr.id then
+    return notify('No pull request selected', levels.WARN)
+  end
+  if pr.status and pr.status ~= 'active' then
+    return notify('Cannot re-queue checks of a ' .. pr.status .. ' pull request', levels.WARN)
+  end
+  local function run(c)
+    if not c.can_requeue then
+      return notify(c.name .. ' is not a build policy: there is nothing to re-queue', levels.WARN)
+    end
+    input().confirm('Re-queue ' .. c.name .. ' on ' .. pr_label(pr) .. '?', function(yes)
+      if not yes then
+        return
+      end
+      api.requeue_policy_evaluation(c.evaluation_id, finish(cb, 'Re-queued ' .. c.name, 'Re-queue failed'))
+    end)
+  end
+  if check then
+    return run(check)
+  end
+  local candidates = {}
+  for _, c in ipairs(checks or {}) do
+    if c.can_requeue then
+      candidates[#candidates + 1] = c
+    end
+  end
+  if #candidates == 0 then
+    return notify('This pull request has no build policies to re-queue', levels.WARN)
+  end
+  vim.ui.select(candidates, {
+    prompt = 'Re-queue build policy',
+    format_item = function(c)
+      return c.name .. '  (' .. (c.label or c.state) .. ')'
+    end,
+  }, function(choice)
+    if choice then
+      run(choice)
+    end
+  end)
+end
+
+--- Pick one of the repository's pipelines and queue it on the PR: on the merge ref
+--- (`refs/pull/<id>/merge`, what build policies build) for active PRs, else the source branch.
+--- Needs a PAT with Build (Read & execute).
+---@param pr AzurePR
+---@param cb fun(err: string|nil, build: table|nil)|nil
+function M.run_pipeline(pr, cb)
+  local repo_id, err = repo_id_of(pr)
+  if not repo_id then
+    return notify(err, levels.WARN)
+  end
+  local ref = (pr.status == nil or pr.status == 'active') and ('refs/pull/' .. pr.id .. '/merge')
+    or (pr.source_branch and ('refs/heads/' .. pr.source_branch))
+  if not ref then
+    return notify('Pull request has no source branch', levels.WARN)
+  end
+  api.list_build_definitions(repo_id, function(lerr, defs)
+    if lerr then
+      return notify('Failed to list pipelines (the PAT needs Build: Read & execute): ' .. tostring(lerr), levels.ERROR)
+    end
+    if not defs or #defs == 0 then
+      return notify('No pipelines are defined for ' .. tostring(pr.repository.name or repo_id), levels.WARN)
+    end
+    vim.ui.select(defs, {
+      prompt = 'Run pipeline on ' .. ref,
+      format_item = function(d)
+        local path = type(d.path) == 'string' and d.path ~= '\\' and (d.path:gsub('^\\', '') .. '\\') or ''
+        return path .. tostring(d.name or d.id)
+      end,
+    }, function(def)
+      if not def then
+        return
+      end
+      input().confirm('Run ' .. tostring(def.name) .. ' on ' .. ref .. '?', function(yes)
+        if not yes then
+          return
+        end
+        api.queue_build(def.id, ref, function(qerr, build)
+          if qerr then
+            return finish(cb, nil, 'Failed to queue ' .. tostring(def.name))(qerr)
+          end
+          local url = build and build._links and build._links.web and build._links.web.href
+          local number = build and (build.buildNumber or build.id)
+          finish(cb, 'Queued ' .. tostring(def.name) .. (number and (' #' .. number) or '') .. (url and (': ' .. url) or ''), '')(nil, build)
+        end)
+      end)
+    end)
+  end)
+end
+
+--- Open the build / status page of a check in the browser.
+---@param check table from models.pr_checks
+function M.open_check(check)
+  local url = check and (check.url or (check.build_id and api.build_web_url(check.build_id)))
+  if not url then
+    return notify((check and check.name or 'This check') .. ' has no build or link to open', levels.WARN)
+  end
+  M.open_url(url)
 end
 
 -- ---------------------------------------------------------------------------

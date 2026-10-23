@@ -78,8 +78,22 @@ local function fake_server()
         {
           value = {
             { status = 'approved', configuration = { isBlocking = true, type = { displayName = 'Minimum number of reviewers' } } },
+            {
+              evaluationId = 'ev-build',
+              status = srv.build_status or 'approved',
+              context = { buildId = 77 },
+              configuration = {
+                isBlocking = true,
+                type = { id = '0609b952-1397-4640-95ec-e00a01b2c241', displayName = 'Build' },
+                settings = { buildDefinitionId = 5, displayName = 'TEST AND BUILD' },
+              },
+            },
           },
         }
+    end
+    if method == 'PATCH' and path == PROJECT_API .. '/policy/evaluations/ev-build' then
+      srv.build_status = 'queued'
+      return 200, { evaluationId = 'ev-build', status = 'queued' }
     end
     local repo, id, rest = path:match('^' .. vim.pesc(PROJECT_API) .. '/git/repositories/([^/]+)/pullRequests/(%d+)(.*)$')
     if not repo then
@@ -323,7 +337,9 @@ describe('e2e', function()
     contains(dtext, 'src/http/client.lua:42')
     contains(dtext, 'Looks good overall')
     contains(dtext, 'ci/build')
-    contains(dtext, 'Minimum number of reviewers')
+    contains(dtext, 'Required reviewers approved')
+    contains(dtext, 'TEST AND BUILD succeeded')
+    falsy(dtext:find('Minimum number of reviewers', 1, true), 'reviewer policy is in the summary')
     falsy(dtext:find('voted 10', 1, true), 'system thread hidden')
     falsy(dtext:find('oops', 1, true), 'deleted thread hidden')
 
@@ -393,7 +409,7 @@ describe('e2e', function()
       end, 3000),
       'thread status refreshed'
     )
-    contains(buf_text(dbuf), '[fixed]')
+    contains(buf_text(dbuf), 'Resolved - ')
     if vim.env.AZURE_PR_E2E_DUMP then
       print('\n--- list ---\n' .. buf_text(lbuf) .. '\n--- detail ---\n' .. buf_text(dbuf))
     end
@@ -441,6 +457,33 @@ describe('e2e', function()
     wait_for(function()
       return not detail.get_state(dbuf).loading
     end, 3000)
+
+    -- re-queue the build policy under the cursor (Q), confirming with Yes -------
+    local orig_select = vim.ui.select
+    local prompts = {}
+    vim.ui.select = function(items, o, cb)
+      table.insert(prompts, o.prompt)
+      cb(items[1]) -- 'Yes'
+    end
+    local check_line
+    for i, l in ipairs(vim.api.nvim_buf_get_lines(dbuf, 0, -1, false)) do
+      if l:find('TEST AND BUILD succeeded', 1, true) then
+        check_line = i
+      end
+    end
+    truthy(check_line, 'build check rendered')
+    vim.api.nvim_set_current_win(dwin)
+    vim.api.nvim_win_set_cursor(dwin, { check_line, 0 })
+    feed 'Q'
+    vim.ui.select = orig_select
+    eq({ 'Re-queue TEST AND BUILD on !101 Add retry policy to HTTP client?' }, prompts)
+    truthy(
+      wait_for(function()
+        return buf_text(dbuf):find('TEST AND BUILD queued', 1, true) ~= nil
+      end, 3000),
+      'evaluation PATCHed and the detail refreshed'
+    )
+    eq(1, #srv.find('PATCH', '/policy/evaluations/ev-build'))
 
     cleanup()
   end)

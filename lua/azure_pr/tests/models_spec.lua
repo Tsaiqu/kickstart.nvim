@@ -266,3 +266,66 @@ describe('models.thread_stats', function()
   end)
 end)
 
+describe('models.pr_checks', function()
+  local BUILD = { id = '0609B952-1397-4640-95EC-E00A01B2C241' }
+  local function policy(kind_type, status, o)
+    return vim.tbl_deep_extend('force', { status = status, configuration = { isBlocking = true, isEnabled = true, type = kind_type } }, o or {})
+  end
+
+  it('classifies policies by type id or name', function()
+    eq('build', models.policy_kind { configuration = { type = BUILD } })
+    eq('comments', models.policy_kind { configuration = { type = { displayName = 'Comment requirements' } } })
+    eq(nil, models.policy_kind { configuration = { type = { displayName = 'Something else' } } })
+  end)
+
+  it('splits required / optional, drops not applicable and disabled ones', function()
+    local ck = models.pr_checks({ merge_status = 'succeeded', reviewers = {} }, {
+      policy(BUILD, 'approved', { configuration = { settings = { displayName = 'LINT', buildDefinitionId = 1 } } }),
+      policy(BUILD, 'rejected', { context = { isExpired = true }, configuration = { isBlocking = false, settings = { buildDefinitionId = 2 } } }),
+      policy(BUILD, 'notApplicable', { configuration = { settings = { buildDefinitionId = 3 } } }),
+      policy({ displayName = 'Work item linking' }, 'approved', { configuration = { isEnabled = false } }),
+      policy({ displayName = 'Status' }, 'running', { configuration = { settings = { statusGenre = 'ci', statusName = 'sonar' } } }),
+    }, {
+      { state = 'succeeded', context = { genre = 'ci', name = 'sonar' } }, -- covered by the status policy
+      { state = 'failed', context = { name = 'other' }, description = 'Other failed' },
+    }, { definition_names = { [2] = 'TRIVY' } })
+    eq({ 'LINT', 'ci/sonar' }, vim.tbl_map(function(c)
+      return c.name
+    end, ck.required))
+    eq('LINT succeeded', ck.required[1].label)
+    eq({ 'TRIVY', 'other' }, vim.tbl_map(function(c)
+      return c.name
+    end, ck.optional))
+    eq('expired', ck.optional[1].state)
+    eq('Build expired', ck.optional[1].label)
+    eq('Other failed', ck.optional[2].label)
+    eq(1, ck.passed)
+    eq(4, ck.total)
+    eq({ kind = 'merge', state = 'approved', label = 'No merge conflicts' }, ck.merge)
+  end)
+
+  it('summarises reviewer requirements', function()
+    local MIN = { displayName = 'Minimum number of reviewers' }
+    local function pr_with(votes, o)
+      local reviewers = {}
+      for i, v in ipairs(votes) do
+        reviewers[i] = { name = 'R' .. i, vote = v, is_required = i == 1 }
+      end
+      return vim.tbl_extend('force', { reviewers = reviewers, merge_status = 'conflicts' }, o or {})
+    end
+    local min2 = policy(MIN, 'rejected', { configuration = { settings = { minimumApproverCount = 2 } } })
+    local r = models.pr_checks(pr_with { 0, 10 }, { min2 }).reviewers
+    eq('running', r.state)
+    eq('Waiting for reviewers to approve', r.label)
+    eq({ '1 of 2 approvals', 'required: R1' }, r.details)
+    r = models.pr_checks(pr_with { 10, -10 }, { min2 }).reviewers
+    eq('rejected', r.state)
+    r = models.pr_checks(pr_with { 10, 5 }, { policy(MIN, 'approved') }).reviewers
+    eq('approved', r.state)
+    eq('Required reviewers approved', r.label)
+    -- no reviewer policies: fall back to the review state
+    r = models.pr_checks(pr_with({ 10 }, { review_state = 'approved' }), {}).reviewers
+    eq('approved', r.state)
+    eq('Merge conflicts', models.pr_checks(pr_with {}, {}).merge.label)
+  end)
+end)

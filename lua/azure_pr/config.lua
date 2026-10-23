@@ -26,6 +26,9 @@ M.defaults = {
     -- background. 'mine' = only while "created by me" is on, 'visible' = always, false = never
     comment_stats = 'mine',
   },
+  detail = {
+    comment_order = 'newest', -- 'newest' (newest threads first; replies do not move them) | 'oldest'
+  },
   -- Each keymap value is a lhs string, a list of lhs strings, or false to disable.
   keymaps = {
     global = {
@@ -70,6 +73,8 @@ M.defaults = {
       -- and the yank operator; 'A' (approve menu) has no meaning in a non-modifiable buffer
       vote = 'A',
       diff = 'D', -- diffview.nvim: target...source
+      requeue = 'Q', -- re-queue the build policy under the cursor (or pick one)
+      run_pipeline = 'gQ', -- pick a pipeline and run it on the PR
       browser = 'o',
       yank_url = 'gy',
       refresh = 'R',
