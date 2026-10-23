@@ -346,6 +346,29 @@ function M.normalize_threads(raws, opts)
   return out
 end
 
+--- Counts shown in the list's comment column, from normalized (non-system) threads:
+--- `comments` = non-deleted text comments, `threads` = resolvable threads (any status but
+--- 'unknown'), `resolved` = those of them that are not active/pending.
+---@param threads table[] result of normalize_threads
+---@return { comments: integer, threads: integer, resolved: integer }
+function M.thread_stats(threads)
+  local s = { comments = 0, threads = 0, resolved = 0 }
+  for _, t in ipairs(threads or {}) do
+    for _, c in ipairs(t.comments or {}) do
+      if not c.is_deleted and c.type ~= 'system' then
+        s.comments = s.comments + 1
+      end
+    end
+    if t.status ~= 'unknown' then
+      s.threads = s.threads + 1
+      if not M.is_thread_open(t.status) then
+        s.resolved = s.resolved + 1
+      end
+    end
+  end
+  return s
+end
+
 --- Find the reviewer entry for a user (direct reviewer only; ids compared case-insensitively).
 ---@param pr AzurePR
 ---@param user_id string|nil

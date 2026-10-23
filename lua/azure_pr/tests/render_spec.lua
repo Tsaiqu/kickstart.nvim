@@ -199,6 +199,40 @@ describe('render.pr_list', function()
     contains(found.AzurePRAuthor, 'Jan Kowalski')
   end)
 
+  it('adds the comment column only when some PR has stats', function()
+    local plain = render.pr_list({ { key = 'all', label = 'All', items = { mkpr(1) } } }, { icons = icons, now = NOW })
+    falsy(table.concat(plain.lines, '\n'):find('resolved', 1, true))
+
+    local a = mkpr(1)
+    a.comment_stats = { comments = 12, threads = 10, resolved = 8 }
+    local b = mkpr(2)
+    b.comment_stats = { comments = 3, threads = 2, resolved = 2 }
+    local c = mkpr(3)
+    c.comment_stats = { comments = 0, threads = 0, resolved = 0 }
+    local d = mkpr(4)
+    d.stats_loading = true
+    local res = render.pr_list({ { key = 'all', label = 'All', items = { a, b, c, d } } }, { icons = icons, now = NOW })
+    local rows = {}
+    for lnum, item in pairs(res.items) do
+      if item.kind == 'pr' then
+        rows[item.pr.id] = res.lines[lnum]
+      end
+    end
+    contains(rows[1], '* 12  8/10 resolved')
+    contains(rows[2], '* 3   2/2 resolved')
+    contains(rows[3], '* 0')
+    falsy(rows[3]:find('resolved', 1, true))
+    contains(rows[4], icons.ellipsis)
+    -- authors stay aligned after the column
+    eq(rows[1]:find('Jan Kowalski', 1, true), rows[3]:find('Jan Kowalski', 1, true))
+    local groups = {}
+    for _, h in ipairs(res.highlights) do
+      groups[h[4]] = true
+    end
+    truthy(groups.AzurePRWaiting, '8/10 is waiting')
+    truthy(groups.AzurePRApproved, '2/2 is approved')
+  end)
+
   it('empty list shows message', function()
     local res = render.pr_list({}, { now = NOW, icons = icons, filters_desc = 'x' })
     check_result(res)

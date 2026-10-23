@@ -20,7 +20,12 @@ M.defaults = {
   default_filters = {},
   date_format = '%Y-%m-%d %H:%M',
   icons = true, -- nerd-font icons; false => ascii
-  list = { layout = 'tab' }, -- 'tab' | 'split' | 'vsplit' | 'current'
+  list = {
+    layout = 'tab', -- 'tab' | 'split' | 'vsplit' | 'current'
+    -- comment column (count, resolved/total threads): one threads request per shown PR, in the
+    -- background. 'mine' = only while "created by me" is on, 'visible' = always, false = never
+    comment_stats = 'mine',
+  },
   -- Each keymap value is a lhs string, a list of lhs strings, or false to disable.
   keymaps = {
     global = {

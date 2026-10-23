@@ -248,3 +248,21 @@ describe('models.normalize_threads', function()
     eq(3, ts[2].id)
   end)
 end)
+
+describe('models.thread_stats', function()
+  it('counts comments and resolved / resolvable threads', function()
+    local threads = models.normalize_threads(F.threads())
+    eq({ comments = 4, threads = 3, resolved = 2 }, models.thread_stats(threads))
+  end)
+
+  it('skips deleted / system comments and status-less threads', function()
+    local threads = {
+      { status = 'active', comments = { { type = 'text' }, { type = 'text', is_deleted = true }, { type = 'system' } } },
+      { status = 'unknown', comments = { { type = 'text' } } },
+      { status = 'closed', comments = {} },
+    }
+    eq({ comments = 2, threads = 2, resolved = 1 }, models.thread_stats(threads))
+    eq({ comments = 0, threads = 0, resolved = 0 }, models.thread_stats {})
+  end)
+end)
+

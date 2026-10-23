@@ -277,6 +277,27 @@ local function hint_segments(hints)
   return segs
 end
 
+--- Comment column cell of a PR: { count text, count hl, ratio text, ratio hl } or nil when the
+--- PR has no stats (not requested). `pr.stats_loading` -> ellipsis, `pr.comment_stats.error` -> '?'.
+local function stats_cell(pr, icons)
+  local s = pr.comment_stats
+  if not s then
+    if pr.stats_loading then
+      return { icons.ellipsis or '...', 'AzurePRMuted', '', nil }
+    end
+    return nil
+  end
+  if s.error then
+    return { '?', 'AzurePRRejected', '', nil }
+  end
+  local count = (icons.thread_active or '*') .. ' ' .. tostring(s.comments)
+  if (s.threads or 0) == 0 then
+    return { count, 'AzurePRMuted', '', nil }
+  end
+  local all = s.resolved == s.threads
+  return { count, 'AzurePRMuted', string.format('%d/%d resolved', s.resolved, s.threads), all and 'AzurePRApproved' or 'AzurePRWaiting' }
+end
+
 ---@param groups table list of { key, label, items } (from filter.group)
 ---@param opts table|nil { collapsed, filters_desc, group_by, status, total, truncated, width, now, icons, hints }
 ---@return table { lines, highlights, items }
@@ -326,6 +347,7 @@ function M.pr_list(groups, opts)
   -- column widths over all visible rows
   local rows = {}
   local w_id, w_author, w_branch, w_age, w_title = 0, 0, 0, 0, 0
+  local w_count, w_ratio, has_stats = 0, 0, false
   for _, g in ipairs(groups) do
     if not collapsed[g.key] then
       for _, pr in ipairs(g.items or {}) do
@@ -335,8 +357,14 @@ function M.pr_list(groups, opts)
           author = truncate(oneline(pr.author and pr.author.name or ''), 24),
           branch = truncate(oneline(pr.source_branch or '') .. arrow .. oneline(pr.target_branch or ''), 48),
           age = relative_time(pr.created_at, now),
+          stats = stats_cell(pr, icons),
         }
         rows[pr] = r
+        if r.stats then
+          has_stats = true
+          w_count = math.max(w_count, dw(r.stats[1]))
+          w_ratio = math.max(w_ratio, dw(r.stats[3]))
+        end
         w_id = math.max(w_id, dw(r.id))
         w_author = math.max(w_author, dw(r.author))
         w_branch = math.max(w_branch, dw(r.branch))
@@ -345,10 +373,12 @@ function M.pr_list(groups, opts)
       end
     end
   end
-  -- '  ' icon ' ' id '  ' title '  ' author '  ' branch '  ' age
+  -- '  ' icon ' ' id '  ' title ['  ' count ['  ' ratio]] '  ' author '  ' branch '  ' age
+  -- (the comment column only appears when some shown PR has stats or is loading them)
   local icon_w = math.max(dw(icons.approved or '+'), 1)
+  local w_stats = has_stats and (2 + w_count + (w_ratio > 0 and (2 + w_ratio) or 0)) or 0
   if opts.width then
-    local fixed = 2 + icon_w + 1 + w_id + 2 + 2 + w_author + 2 + w_branch + 2 + w_age
+    local fixed = 2 + icon_w + 1 + w_id + 2 + w_stats + 2 + w_author + 2 + w_branch + 2 + w_age
     w_title = math.max(20, math.min(w_title, opts.width - fixed))
   else
     w_title = math.min(w_title, 60)
@@ -367,20 +397,32 @@ function M.pr_list(groups, opts)
         local r = rows[pr]
         local icon, icon_hl = state_style(pr, icons)
         local title_hl = pr.is_draft and 'AzurePRDraft' or nil
-        b.add({
+        local segs = {
           { '  ' },
           { pad(icon, icon_w), icon_hl },
           { ' ' },
           { pad(r.id, w_id), 'AzurePRId' },
           { '  ' },
           { pad(truncate(r.title, w_title), w_title), title_hl },
+        }
+        if has_stats then
+          local s = r.stats or { '', nil, '', nil }
+          segs[#segs + 1] = { '  ' }
+          segs[#segs + 1] = { pad(s[1], w_count), s[2] }
+          if w_ratio > 0 then
+            segs[#segs + 1] = { '  ' }
+            segs[#segs + 1] = { pad(s[3], w_ratio), s[4] }
+          end
+        end
+        vim.list_extend(segs, {
           { '  ' },
           { pad(r.author, w_author), 'AzurePRAuthor' },
           { '  ' },
           { pad(r.branch, w_branch), 'AzurePRBranch' },
           { '  ' },
           { r.age, 'AzurePRMuted' },
-        }, { kind = 'pr', pr = pr, group_key = g.key })
+        })
+        b.add(segs, { kind = 'pr', pr = pr, group_key = g.key })
         -- strip trailing padding (age may be shorter than column)
         local stripped = b.lines[#b.lines]:gsub('%s+$', '')
         b.lines[#b.lines] = stripped

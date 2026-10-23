@@ -69,7 +69,10 @@ require('azure_pr').setup {
   default_filters = {},      -- e.g. { draft = false }
   date_format = '%Y-%m-%d %H:%M',
   icons = true,              -- nerd-font icons; false = ASCII
-  list = { layout = 'tab' }, -- tab | split | vsplit | current
+  list = {
+    layout = 'tab',          -- tab | split | vsplit | current
+    comment_stats = 'mine',  -- comment column: 'mine' (with "created by me") | 'visible' | false
+  },
   keymaps = { global = {...}, list = {...}, detail = {...} }, -- see below
 }
 ```
@@ -118,6 +121,14 @@ branch (e.g. the file was opened from a detail view while on `main`) and HEAD is
 source branch, you are asked to confirm before the editor opens.
 
 ## PR list (`azure-pr://prs`)
+
+With `list.comment_stats` (default `'mine'`: only while the "created by me" filter is on, e.g.
+`:AzurePR mine`) each row also shows the number of comments and how many comment threads are
+resolved, e.g. `12  8/10 resolved` (green when all are resolved). The counts load in the
+background, one threads request per shown PR (4 at a time): `…` while loading, `?` when the
+request failed. Threads without a status and system threads (votes, policy updates) are not
+counted. `R` reloads them; the detail view updates them when it loads the PR's threads. Use
+`'visible'` to show the column in every list (one request per shown PR), `false` to turn it off.
 
 | Key | Action (config name) |
 | --- | --- |

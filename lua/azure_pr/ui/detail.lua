@@ -367,6 +367,11 @@ local function load(buf, done)
         st.threads = models().normalize_threads(res.threads, { include_system = st.include_system })
         st.threads_loaded = true
         st.threads_error = nil
+        -- keep the list's comment column in sync (only when the list is loaded at all)
+        local list = package.loaded['azure_pr.ui.list']
+        if list and list.set_comment_stats then
+          pcall(list.set_comment_stats, st.id, st.include_system and models().normalize_threads(res.threads) or st.threads)
+        end
       end
       -- tolerated failures: keep previous data (or none) and do not bother the user
       if not res.statuses_err then
