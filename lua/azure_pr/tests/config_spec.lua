@@ -16,6 +16,12 @@ local function restore_env()
 end
 
 describe('config.setup/get', function()
+  it('has thread float keymaps', function()
+    config.setup()
+    eq('<leader>pt', config.get().keymaps.global.thread)
+    eq('r', config.get().keymaps.inline.reply)
+    eq({ 'q', '<Esc>' }, config.get().keymaps.inline.close)
+  end)
   it('returns defaults', function()
     config.setup()
     eq('https://dev.azure.com', config.get().base_url)

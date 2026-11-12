@@ -87,11 +87,13 @@ end
 --- Refresh an open detail view of this PR (after commenting/voting from a file buffer or the list).
 ---@param pr AzurePR
 function M.refresh_detail_of(pr)
-  local detail = package.loaded['azure_pr.ui.detail']
-  if type(detail) ~= 'table' or not detail.find_pr or not detail.refresh then
+  if type(pr) ~= 'table' or pr.id == nil then
     return
   end
-  if type(pr) ~= 'table' or pr.id == nil then
+  -- inline markers read the shared store (set fires AzurePRThreadsChanged)
+  pcall(require('azure_pr.threads_store').fetch, pr, function() end)
+  local detail = package.loaded['azure_pr.ui.detail']
+  if type(detail) ~= 'table' or not detail.find_pr or not detail.refresh then
     return
   end
   local ok, found, dbuf = pcall(detail.find_pr, pr.id)

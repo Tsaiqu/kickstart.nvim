@@ -202,6 +202,175 @@ function M.place(buf, pr, threads, opts)
 
   vim.b[buf].azure_pr_inline = { pr_id = pr and pr.id, side = opts.side, path = opts.path }
   set_keys(buf, st)
+  M._ensure_refresh_autocmd()
+end
+
+local refresh_registered = false
+
+--- Re-place markers in every buffer attached to the PR whose threads changed in the store.
+function M._ensure_refresh_autocmd()
+  if refresh_registered then
+    return
+  end
+  refresh_registered = true
+  vim.api.nvim_create_autocmd('User', {
+    group = vim.api.nvim_create_augroup('AzurePRInlineRefresh', { clear = true }),
+    pattern = 'AzurePRThreadsChanged',
+    callback = function(ev)
+      local pr_id = ev.data and ev.data.pr_id
+      local entry = pr_id ~= nil and require('azure_pr.threads_store').get(pr_id) or nil
+      if not entry then
+        return
+      end
+      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+        local ok, info = pcall(function()
+          return vim.b[buf].azure_pr_inline
+        end)
+        if ok and type(info) == 'table' and tostring(info.pr_id) == tostring(pr_id) and state[buf] then
+          M.place(buf, entry.pr, entry.threads, { side = info.side, path = info.path })
+        end
+      end
+    end,
+  })
+end
+
+local function inline_keys()
+  local defaults = { reply = 'r', status = 's', browser = 'o', close = { 'q', '<Esc>' } }
+  local ok, config = pcall(require, 'azure_pr.config')
+  if not ok then
+    return defaults
+  end
+  local okc, cur = pcall(config.get)
+  local user = okc and type(cur) == 'table' and cur.keymaps and cur.keymaps.inline or {}
+  return vim.tbl_extend('force', defaults, user)
+end
+
+--- Float with the full thread(s) on `lnum` of `buf` (defaults: current buffer / cursor line).
+---@param buf integer|nil
+---@param lnum integer|nil
+function M.show_thread(buf, lnum)
+  buf = buf or vim.api.nvim_get_current_buf()
+  lnum = lnum or vim.api.nvim_win_get_cursor(0)[1]
+  local threads = M.threads_at(buf, lnum)
+  if #threads == 0 then
+    vim.notify('No comment thread on this line', vim.log.levels.WARN)
+    return
+  end
+  local info = vim.b[buf].azure_pr_inline or {}
+  local entry = info.pr_id ~= nil and require('azure_pr.threads_store').get(info.pr_id) or nil
+  local pr = entry and entry.pr or { id = info.pr_id }
+
+  local render = require 'azure_pr.ui.render'
+  local width = math.min(80, vim.o.columns - 4)
+  local lines, highlights, items = {}, {}, {}
+  local total = 0
+  for i, t in ipairs(threads) do
+    if i > 1 then
+      lines[#lines + 1] = ''
+    end
+    if #threads > 1 then
+      lines[#lines + 1] = ('[%s] thread %d/%d'):format(t.status or 'unknown', i, #threads)
+      items[#lines] = { kind = 'thread', thread = t }
+      highlights[#highlights + 1] = { #lines - 1, 0, -1, is_open(t.status) and 'AzurePRThreadActive' or 'AzurePRInlineResolved' }
+    end
+    local res = render.thread_lines(t, { width = width, icons = hl.icons(use_icons()), pr = pr })
+    local off = #lines
+    for _, l in ipairs(res.lines) do
+      lines[#lines + 1] = l
+    end
+    for _, h in ipairs(res.highlights) do
+      highlights[#highlights + 1] = { h[1] + off, h[2], h[3], h[4] }
+    end
+    for n, item in pairs(res.items) do
+      items[n + off] = item
+    end
+    total = total + #visible_text_comments(t)
+  end
+
+  local fbuf = vim.api.nvim_create_buf(false, true)
+  vim.bo[fbuf].buftype = 'nofile'
+  vim.bo[fbuf].bufhidden = 'wipe'
+  vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, lines)
+  for _, h in ipairs(highlights) do
+    pcall(vim.api.nvim_buf_set_extmark, fbuf, M.ns, h[1], h[2], {
+      end_row = h[3] == -1 and h[1] + 1 or h[1],
+      end_col = h[3] ~= -1 and h[3] or 0,
+      hl_group = h[4],
+    })
+  end
+  vim.bo[fbuf].modifiable = false
+
+  local status = #threads == 1 and (threads[1].status or 'unknown') or (#threads .. ' threads')
+  local title = (' %s · %d comment%s '):format(status, total, total == 1 and '' or 's')
+  local win = vim.api.nvim_open_win(fbuf, true, {
+    relative = 'cursor',
+    row = 1,
+    col = 0,
+    width = width,
+    height = math.max(math.min(#lines, 20), 1),
+    style = 'minimal',
+    border = 'rounded',
+    title = title,
+    title_pos = 'left',
+  })
+  vim.wo[win].wrap = true
+
+  local function close()
+    if vim.api.nvim_win_is_valid(win) then
+      pcall(vim.api.nvim_win_close, win, true)
+    end
+  end
+  vim.api.nvim_create_autocmd('WinLeave', { buffer = fbuf, once = true, callback = close })
+
+  local function under_cursor()
+    local row = vim.api.nvim_win_get_cursor(win)[1]
+    local item = items[row]
+    -- fall back to the nearest item above (wrapped / blank lines)
+    local r = row
+    while not item and r > 1 do
+      r = r - 1
+      item = items[r]
+    end
+    item = item or items[next(items)]
+    local t = item and item.thread or threads[1]
+    return t, item and item.kind == 'comment' and item.comment or nil
+  end
+
+  local function done(err)
+    if not err then
+      close()
+    end
+  end
+
+  local keys = inline_keys()
+  local function map(lhss, fn, desc)
+    for _, lhs in ipairs(lhs_list(lhss)) do
+      vim.keymap.set('n', lhs, fn, { buffer = fbuf, nowait = true, silent = true, desc = 'Azure PR: ' .. desc })
+    end
+  end
+  local actions = require 'azure_pr.actions'
+  map(keys.close, close, 'Close thread')
+  map(keys.reply, function()
+    local t, c = under_cursor()
+    actions.reply(pr, t, c, function(err)
+      if not err then
+        actions.refresh_detail_of(pr)
+      end
+      done(err)
+    end)
+  end, 'Reply')
+  map(keys.status, function()
+    local t = under_cursor()
+    actions.set_thread_status(pr, t, function(err)
+      if not err then
+        actions.refresh_detail_of(pr)
+      end
+      done(err)
+    end)
+  end, 'Change thread status')
+  map(keys.browser, function()
+    actions.open_in_browser(pr)
+  end, 'Open PR in browser')
 end
 
 --- Threads anchored on `lnum` (1-based).

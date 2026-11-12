@@ -183,3 +183,94 @@ describe('inline keymaps and detach', function()
     falsy(has_map(buf, '[t'))
   end)
 end)
+
+describe('inline.show_thread', function()
+  local store = require 'azure_pr.threads_store'
+  local actions = require 'azure_pr.actions'
+  local PR = { id = 7, repository = { id = 'r' } }
+
+  local function float_wins()
+    local out = {}
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_config(w).relative ~= '' then
+        out[#out + 1] = w
+      end
+    end
+    return out
+  end
+  local function close_floats()
+    for _, w in ipairs(float_wins()) do
+      pcall(vim.api.nvim_win_close, w, true)
+    end
+  end
+
+  it('opens a float with author and content', function()
+    local buf = scratch()
+    inline.place(buf, PR, { thread(1, 3) }, OPTS)
+    vim.api.nvim_win_set_cursor(0, { 3, 0 })
+    inline.show_thread()
+    local fl = float_wins()
+    eq(1, #fl)
+    local fb = vim.api.nvim_win_get_buf(fl[1])
+    local text = table.concat(vim.api.nvim_buf_get_lines(fb, 0, -1, false), '\n')
+    contains(text, 'Jan Kowalski')
+    contains(text, 'VAT liczymy')
+    falsy(vim.bo[fb].modifiable)
+    close_floats()
+  end)
+
+  it('warns when no thread on the line', function()
+    local buf = scratch()
+    inline.place(buf, PR, { thread(1, 3) }, OPTS)
+    vim.api.nvim_win_set_cursor(0, { 5, 0 })
+    local orig = vim.notify
+    local got
+    vim.notify = function(msg, level)
+      got = { msg, level }
+    end
+    inline.show_thread()
+    vim.notify = orig
+    eq('No comment thread on this line', got[1])
+    eq(vim.log.levels.WARN, got[2])
+    eq(0, #float_wins())
+  end)
+
+  it('r and s call actions with thread and PR', function()
+    local buf = scratch()
+    inline.place(buf, PR, { thread(11, 3) }, OPTS)
+    vim.api.nvim_win_set_cursor(0, { 3, 0 })
+    inline.show_thread()
+    local o_reply, o_status = actions.reply, actions.set_thread_status
+    local calls = {}
+    actions.reply = function(pr, t, c, cb)
+      calls.reply = { pr, t, c, cb }
+    end
+    actions.set_thread_status = function(pr, t, cb)
+      calls.status = { pr, t, cb }
+    end
+    local fw = float_wins()[1]
+    local fb = vim.api.nvim_win_get_buf(fw)
+    vim.api.nvim_win_set_cursor(fw, { 2, 0 })
+    vim.api.nvim_buf_call(fb, function()
+      vim.cmd 'normal r'
+    end)
+    eq(11, calls.reply[2].id)
+    eq(7, calls.reply[1].id)
+    truthy(calls.reply[3] ~= nil, 'comment under cursor')
+    vim.api.nvim_buf_call(fb, function()
+      vim.cmd 'normal s'
+    end)
+    eq(11, calls.status[2].id)
+    actions.reply, actions.set_thread_status = o_reply, o_status
+    close_floats()
+  end)
+
+  it('re-places markers when the store changes', function()
+    local buf = scratch()
+    inline.place(buf, PR, { thread(1, 3) }, OPTS)
+    eq('AzurePRThreadActive', marks(buf)[1][4].sign_hl_group)
+    store.set(PR, { thread(1, 3, { status = 'fixed' }) })
+    eq('AzurePRInlineResolved', marks(buf)[1][4].sign_hl_group)
+    store.clear()
+  end)
+end)

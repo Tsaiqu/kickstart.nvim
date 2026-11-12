@@ -39,6 +39,13 @@ M.defaults = {
       review = '<leader>pr',
       current = '<leader>pc',
       comment = '<leader>pa', -- normal & visual mode
+      thread = '<leader>pt', -- thread float on the current line
+    },
+    inline = { -- inside the thread float
+      reply = 'r',
+      status = 's',
+      browser = 'o',
+      close = { 'q', '<Esc>' },
     },
     list = {
       open = '<CR>',

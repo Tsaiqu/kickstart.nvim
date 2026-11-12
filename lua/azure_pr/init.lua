@@ -287,6 +287,9 @@ local function setup_global_keymaps(cfg)
     M.comment {}
   end, 'Azure [P]R comment ([A]dd) on line')
   map({ 'x' }, g.comment, comment_visual, 'Azure [P]R comment ([A]dd) on lines')
+  map({ 'n' }, g.thread, function()
+    require('azure_pr.ui.inline').show_thread()
+  end, 'Azure [P]R [T]hread on line')
   M._register_which_key_group(g)
 end
 
@@ -296,7 +299,7 @@ end
 function M._register_which_key_group(g)
   local prefix = g.group_prefix or '<leader>p'
   local used = false
-  for _, k in ipairs { 'list', 'mine', 'review', 'current', 'comment' } do
+  for _, k in ipairs { 'list', 'mine', 'review', 'current', 'comment', 'thread' } do
     local v = g[k]
     for _, lhs in ipairs(type(v) == 'table' and v or { v }) do
       if type(lhs) == 'string' and lhs:sub(1, #prefix) == prefix and #lhs > #prefix then
