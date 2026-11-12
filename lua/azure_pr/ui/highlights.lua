@@ -19,6 +19,16 @@ M.links = {
   AzurePRThreadActive = 'DiagnosticWarn',
   AzurePRThreadResolved = 'DiagnosticOk',
   AzurePRCommentAuthor = 'Identifier',
+  AzurePRPath = 'NonText',
+  AzurePRBorder = 'FloatBorder',
+  AzurePRCodeBg = 'ColorColumn',
+  AzurePRCodeAdd = 'DiffAdd',
+  AzurePRCodeDel = 'DiffDelete',
+  AzurePRCodeFocus = 'Visual',
+  AzurePRLineNr = 'LineNr',
+  AzurePRCommentBody = 'Normal',
+  AzurePRInlineHint = 'Comment',
+  AzurePRInlineResolved = 'NonText',
   AzurePRCommentDate = 'Comment',
   AzurePRFile = 'Directory',
   AzurePRHeader = 'Title',
@@ -64,6 +74,13 @@ local NERD = {
   arrow = u(0x2192), -- →
   dot = u(0x00b7), -- ·
   ellipsis = u(0x2026), -- …
+  -- comment frame box drawing
+  box_tl = u(0x256d), -- ╭
+  box_tr = u(0x256e), -- ╮
+  box_bl = u(0x2570), -- ╰
+  box_br = u(0x256f), -- ╯
+  box_h = u(0x2500), -- ─
+  box_v = u(0x2502), -- │
 }
 
 local ASCII = {
@@ -85,6 +102,12 @@ local ASCII = {
   arrow = '->',
   dot = '-',
   ellipsis = '~',
+  box_tl = '+',
+  box_tr = '+',
+  box_bl = '+',
+  box_br = '+',
+  box_h = '-',
+  box_v = '|',
 }
 
 --- Icon table according to `config.icons` (nerd font when true, ascii otherwise).
