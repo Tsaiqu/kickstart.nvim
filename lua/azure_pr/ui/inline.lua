@@ -434,11 +434,19 @@ end
 local GIT_CACHE_TTL = 30 -- seconds
 
 local git_cache = {} ---@type table<string, { root: string, branch: string, t: number }> dir -> repo info
+local git_inflight = {} ---@type table<string, function[]> dir -> callbacks waiting for the running lookup
+local remote_cache = {} ---@type table<string, table|false> root -> parsed Azure remote (false: none)
 local pr_cache = {} ---@type table<string, table> "root\0branch" -> { pr = PR|false } or { waiting = fun[] }
+local file_attached = {} ---@type table<integer, { root: string, branch: string, pr_id: any }> buffers marked by attach_file_buf
 
 --- Forget cached git info and PR lookups (tests).
 function M._reset_caches()
-  git_cache, pr_cache = {}, {}
+  git_cache, git_inflight, remote_cache, pr_cache, file_attached = {}, {}, {}, {}, {}
+end
+
+--- Expire the cached git branch info only (tests simulate the TTL passing).
+function M._reset_caches_git_only()
+  git_cache = {}
 end
 
 --- Load threads of `pr` (store first, then a silent fetch) and place them in `buf`.
@@ -499,26 +507,53 @@ function M._prune_diff_views()
   end
 end
 
---- Root and branch of the git repo containing `dir` (cached for GIT_CACHE_TTL seconds).
+--- Root and branch of the git repo containing `dir`; `cb(nil)` when there is none (or HEAD is
+--- detached). Results, including failures, are cached for GIT_CACHE_TTL seconds and concurrent
+--- lookups for one dir share a single git run.
 local function repo_info(dir, cb)
   local c = git_cache[dir]
   if c and os.time() - c.t < GIT_CACHE_TTL then
     return cb(c.root, c.branch)
   end
+  if git_inflight[dir] then
+    table.insert(git_inflight[dir], cb)
+    return
+  end
+  local waiting = { cb }
+  git_inflight[dir] = waiting
+  local function finish(root, branch)
+    git_cache[dir] = { root = root, branch = branch, t = os.time() }
+    git_inflight[dir] = nil
+    for _, f in ipairs(waiting) do
+      f(root, branch)
+    end
+  end
   local actions = require 'azure_pr.actions'
   actions._git({ 'rev-parse', '--show-toplevel' }, { cwd = dir }, function(code, out)
     local root = vim.trim(out or '')
     if code ~= 0 or root == '' then
-      return cb(nil)
+      return finish(nil, nil)
     end
     actions._git({ 'rev-parse', '--abbrev-ref', 'HEAD' }, { cwd = dir }, function(bcode, bout)
       local branch = vim.trim(bout or '')
       if bcode ~= 0 or branch == '' or branch == 'HEAD' then
-        return cb(nil)
+        return finish(nil, nil)
       end
-      git_cache[dir] = { root = root, branch = branch, t = os.time() }
-      cb(root, branch)
+      finish(root, branch)
     end)
+  end)
+end
+
+--- Azure DevOps `origin` remote of `root` (`cb(remote|nil)`), cached per root for the session.
+local function remote_for_root(root, cb)
+  local hit = remote_cache[root]
+  if hit ~= nil then
+    return cb(hit or nil)
+  end
+  require('azure_pr.actions')._git({ 'remote', 'get-url', 'origin' }, { cwd = root }, function(code, out)
+    local remote = code == 0 and require('azure_pr.util').parse_remote(vim.trim(out or '')) or nil
+    remote_cache[root] = remote or false
+    cb(remote)
   end)
 end
 
@@ -549,37 +584,63 @@ local function pr_for_branch(root, branch, cb)
 end
 
 --- `BufWinEnter` of a regular file: mark PR threads when HEAD is the PR's source branch.
+--- Re-resolves on every entry (cached), so markers disappear after a branch switch.
 ---@param buf integer
 function M.attach_file_buf(buf)
   if not vim.api.nvim_buf_is_valid(buf) or vim.bo[buf].buftype ~= '' then
     return
   end
   local name = vim.api.nvim_buf_get_name(buf)
-  if name == '' or name:find '^%a[%w+.-]*://' or state[buf] then
+  if name == '' or name:find '^%a[%w+.-]*://' then
     return
+  end
+  local prev = file_attached[buf]
+  if state[buf] and not prev then
+    return -- marked by someone else (diffview)
+  end
+  local function drop()
+    if prev and file_attached[buf] == prev then
+      file_attached[buf] = nil
+      M.detach(buf)
+    end
   end
   repo_info(vim.fs.dirname(name), function(root, branch)
     if not root then
-      return
+      return drop()
     end
     local prefix = root:gsub('/+$', '') .. '/'
     if name:sub(1, #prefix) ~= prefix then
-      return
+      return drop()
     end
     local rel = name:sub(#prefix + 1)
-    -- only when azure_pr resolves an Azure DevOps target for this repo
-    require('azure_pr.config').resolve_target(function(terr)
-      if terr then
-        return
+    -- only Azure DevOps repositories, and only when azure_pr resolves a target
+    remote_for_root(root, function(remote)
+      if not remote then
+        return drop()
       end
-      pr_for_branch(root, branch, function(pr)
-        if pr and vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_get_name(buf) == name then
-          place_from_store(buf, pr, { side = 'right', path = rel })
+      require('azure_pr.config').resolve_target(function(terr)
+        if terr then
+          return drop()
         end
+        pr_for_branch(root, branch, function(pr)
+          if not vim.api.nvim_buf_is_valid(buf) or vim.api.nvim_buf_get_name(buf) ~= name then
+            return
+          end
+          local repo = pr and pr.repository and pr.repository.name
+          if not (repo and remote.repository and repo:lower() == remote.repository:lower()) then
+            return drop()
+          end
+          if prev and prev.root == root and prev.branch == branch and prev.pr_id == pr.id and state[buf] then
+            return
+          end
+          file_attached[buf] = { root = root, branch = branch, pr_id = pr.id }
+          place_from_store(buf, pr, { side = 'right', path = rel })
+        end)
       end)
     end)
   end)
 end
+
 
 --- Register the autocmds (idempotent).
 function M.setup()

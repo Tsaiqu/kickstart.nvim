@@ -317,11 +317,12 @@ describe('inline auto attach', function()
     notify = vim.notify,
     loaded = package.loaded['diffview.lib'],
   }
-  local notes, cbp_calls
+  local notes, cbp_calls, git_calls, branch
+  local AZURE = 'https://dev.azure.com/org/proj/_git/web'
 
   local function setup(opts)
     opts = opts or {}
-    notes, cbp_calls = 0, 0
+    notes, cbp_calls, git_calls, branch = 0, 0, 0, 'feature/x'
     inline._reset_caches()
     store.clear()
     state.diff_views = {}
@@ -333,16 +334,22 @@ describe('inline auto attach', function()
     end
     actions._git = function(args, _, cb)
       local key = table.concat(args, ' ')
+      git_calls = git_calls + 1
+      if opts.no_git then
+        return cb(128, '', 'not a git repository')
+      end
       if key == 'rev-parse --show-toplevel' then
         return cb(0, '/tmp/repo\n', '')
       elseif key == 'rev-parse --abbrev-ref HEAD' then
-        return cb(0, 'feature/x\n', '')
+        return cb(0, branch .. '\n', '')
+      elseif key == 'remote get-url origin' then
+        return cb(0, (opts.remote or AZURE) .. '\n', '')
       end
       cb(1, '', 'unexpected ' .. key)
     end
     actions.current_branch_pr = function(cb)
       cbp_calls = cbp_calls + 1
-      if opts.pr then
+      if opts.pr and branch == opts.pr.source_branch then
         return cb(nil, opts.pr)
       end
       cb 'No active pull request'
@@ -454,7 +461,7 @@ describe('inline auto attach', function()
   end)
 
   it('attach_file_buf places markers when the PR is found (path relative to root)', function()
-    local pr = { id = 987013, source_branch = 'feature/x' }
+    local pr = { id = 987013, source_branch = 'feature/x', repository = { name = 'web' } }
     setup { pr = pr }
     store.set(pr, { thread(1, 4) })
     local buf = scratch()
@@ -464,6 +471,58 @@ describe('inline auto attach', function()
     eq(1, #marks(buf))
     eq('src/a.py', vim.b[buf].azure_pr_inline.path)
     eq(0, notes)
+    teardown()
+  end)
+
+  local function file_buf(path)
+    local buf = scratch()
+    vim.bo[buf].buftype = ''
+    vim.api.nvim_buf_set_name(buf, path or '/tmp/repo/src/a.py')
+    return buf
+  end
+
+  it('attach_file_buf skips repositories whose origin is not Azure DevOps', function()
+    setup { remote = 'git@github.com:me/web.git', pr = { id = 987014, source_branch = 'feature/x', repository = { name = 'web' } } }
+    local buf = file_buf()
+    inline.attach_file_buf(buf)
+    eq(0, cbp_calls)
+    eq(0, #marks(buf))
+    teardown()
+  end)
+
+  it('attach_file_buf ignores a PR from a different repository', function()
+    local pr = { id = 987015, source_branch = 'feature/x', repository = { name = 'other' } }
+    setup { pr = pr }
+    store.set(pr, { thread(1, 4) })
+    local buf = file_buf()
+    inline.attach_file_buf(buf)
+    eq(0, #marks(buf))
+    teardown()
+  end)
+
+  it('caches git failures: two attaches in a non-git dir run git once', function()
+    setup { no_git = true }
+    local b1 = file_buf '/tmp/repo/src/a.py'
+    inline.attach_file_buf(b1)
+    local b2 = file_buf '/tmp/repo/src/b.py'
+    inline.attach_file_buf(b2)
+    eq(1, git_calls)
+    eq(0, cbp_calls)
+    teardown()
+  end)
+
+  it('attach_file_buf drops markers after the branch changes', function()
+    local pr = { id = 987016, source_branch = 'feature/x', repository = { name = 'web' } }
+    setup { pr = pr }
+    store.set(pr, { thread(1, 4) })
+    local buf = file_buf()
+    inline.attach_file_buf(buf)
+    eq(1, #marks(buf))
+    branch = 'other'
+    inline._reset_caches_git_only()
+    inline.attach_file_buf(buf)
+    eq(0, #marks(buf))
+    eq(nil, vim.b[buf].azure_pr_inline)
     teardown()
   end)
 end)
