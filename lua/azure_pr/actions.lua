@@ -732,10 +732,12 @@ function M.resolve_pr_revs(pr, cwd, cb, opts)
         if opts.base == false then
           return finish_revs(nil)
         end
-        M._git({ 'merge-base', left, right }, { cwd = cwd }, function(code, stdout)
+        M._git({ 'merge-base', left, right }, { cwd = cwd }, function(code, stdout, stderr)
           local sha = vim.trim(stdout or '')
-          -- no common ancestor: fall back to the target side
-          finish_revs(code == 0 and sha ~= '' and sha or left)
+          if code ~= 0 or sha == '' then
+            return cb(git_err(stderr, 'git merge-base failed'))
+          end
+          finish_revs(sha)
         end)
       end)
     end)

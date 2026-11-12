@@ -623,6 +623,23 @@ describe('actions.resolve_pr_revs', function()
     contains(err, 'fatal: nope')
   end)
 
+  it('returns an error and does not cache when merge-base fails', function()
+    local actions = setup {
+      git = { [FETCH] = { 0 }, [verify 'tgt1'] = { 0 }, [verify 'src1'] = { 0 }, ['merge-base tgt1 src1'] = { 1, '', 'fatal: no merge base' } },
+    }
+    local errs = {}
+    local function cb(e)
+      table.insert(errs, e)
+    end
+    actions.resolve_pr_revs(pr(P), '/repo', cb)
+    local calls = #ctx.git
+    actions.resolve_pr_revs(pr(P), '/repo', cb)
+    teardown()
+    contains(errs[1], 'no merge base')
+    eq(2, #errs)
+    eq(calls * 2, #ctx.git)
+  end)
+
   it('caches the result per PR and can be bypassed', function()
     local actions = setup {
       git = { [FETCH] = { 0 }, [verify 'tgt1'] = { 0 }, [verify 'src1'] = { 0 }, ['merge-base tgt1 src1'] = { 0, 'b\n' } },
