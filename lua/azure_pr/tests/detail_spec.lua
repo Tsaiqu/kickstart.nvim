@@ -131,6 +131,8 @@ local function setup(resp)
   local act = fake_actions()
   package.loaded['azure_pr.api'] = A
   package.loaded['azure_pr.actions'] = act
+  -- deterministic default: snippets never resolve (tests needing them re-stub azure_pr.snippet)
+  package.loaded['azure_pr.snippet'] = { get = function() end, clear_cache = function() end }
   require('azure_pr.config').setup { icons = false }
   require('azure_pr.ui.highlights').setup()
   local msgs, restore = silence_notify()
@@ -766,6 +768,32 @@ describe('ui.detail (review fixes)', function()
       falsy(table.concat(lines(buf), '\n'):find('Loading code', 1, true))
       eq(1, renders)
       require('azure_pr.ui.render').pr_detail = orig
+      restore()
+    end)
+
+    it('renders snippets that arrive in separate ticks', function()
+      local detail, _, _, _, restore = setup()
+      local pending = {}
+      with_snippet(function(t, cb)
+        pending[#pending + 1] = { t = t, cb = cb }
+      end)
+      local buf = detail.open(normalized_pr(), { split = 'current' })
+      truthy(loaded(detail, buf))
+      truthy(#pending >= 2, 'fixture has at least two file threads')
+      local function text()
+        return table.concat(lines(buf), '\n')
+      end
+      pending[1].cb { { kind = ' ', new = 1, old = 1, text = 'first_snip', focus = true } }
+      wait_for(function()
+        return text():find('first_snip', 1, true) ~= nil
+      end, 1000)
+      contains(text(), 'Loading code…')
+      pending[2].cb { { kind = ' ', new = 1, old = 1, text = 'second_snip', focus = true } }
+      wait_for(function()
+        return text():find('second_snip', 1, true) ~= nil
+      end, 1000)
+      contains(text(), 'first_snip')
+      contains(text(), 'second_snip')
       restore()
     end)
 

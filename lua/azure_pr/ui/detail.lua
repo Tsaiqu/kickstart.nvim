@@ -393,6 +393,7 @@ local function fetch_snippets(buf, st)
     end
     render_scheduled = true
     vim.schedule(function()
+      render_scheduled = false
       if M._states[buf] == st and st.snippets == snippets and usable(buf) then
         render(buf)
       end
