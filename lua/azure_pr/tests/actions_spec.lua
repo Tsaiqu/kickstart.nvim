@@ -623,7 +623,7 @@ describe('actions.resolve_pr_revs', function()
     contains(err, 'fatal: nope')
   end)
 
-  it('returns an error and does not cache when merge-base fails', function()
+  it('returns an error and caches the failure per key (new commit retries) when merge-base fails', function()
     local actions = setup {
       git = { [FETCH] = { 0 }, [verify 'tgt1'] = { 0 }, [verify 'src1'] = { 0 }, ['merge-base tgt1 src1'] = { 1, '', 'fatal: no merge base' } },
     }
@@ -637,7 +637,40 @@ describe('actions.resolve_pr_revs', function()
     teardown()
     contains(errs[1], 'no merge base')
     eq(2, #errs)
-    eq(calls * 2, #ctx.git)
+    eq(calls, #ctx.git)
+    actions.resolve_pr_revs(pr { source_commit = 'src2', target_commit = 'tgt1' }, '/repo', cb)
+    truthy(#ctx.git > calls)
+  end)
+
+  it('shares one git sequence between concurrent callers', function()
+    local actions = setup {
+      git = { [FETCH] = { 0 }, [verify 'tgt1'] = { 0 }, [verify 'src1'] = { 0 }, ['merge-base tgt1 src1'] = { 0, 'b\n' } },
+    }
+    local held, n = {}, 0
+    local orig = actions._git
+    actions._git = function(args, o, cb)
+      orig(args, o, function(...)
+        local a = { ... }
+        table.insert(held, function() cb(unpack(a)) end)
+      end)
+    end
+    for _ = 1, 5 do
+      actions.resolve_pr_revs(pr(P), '/repo', function(e, r) if r then n = n + 1 end end, { fetch = false })
+    end
+    -- release each pending git call until the queue drains
+    while #held > 0 do table.remove(held, 1)() end
+    teardown()
+    eq(5, n)
+    eq({ verify 'tgt1', verify 'src1', 'merge-base tgt1 src1' }, ctx.git)
+  end)
+
+  it('check_repo refuses a clone of another repository without fetching', function()
+    local actions = setup { git = { ['remote get-url origin'] = { 0, 'https://dev.azure.com/o/p/_git/other\n' } } }
+    local err
+    actions.resolve_pr_revs(pr(P), '/repo', function(e) err = e end, { check_repo = true })
+    teardown()
+    contains(err, 'belongs to')
+    eq({ 'remote get-url origin' }, ctx.git)
   end)
 
   it('caches the result per PR and can be bypassed', function()

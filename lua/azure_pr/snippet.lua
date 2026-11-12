@@ -22,9 +22,39 @@ local M = {}
 local UNAVAILABLE = 'code unavailable'
 
 local cache = {}
+local git_cache = {} -- (kind, rev, path) -> git output; shared by all threads of a file
+local git_inflight = {}
 
 function M.clear_cache()
   cache = {}
+  git_cache = {}
+  git_inflight = {}
+end
+
+--- Run a git command once per `key`: successes are cached, concurrent callers share the call.
+---@param key string
+---@param args string[]
+---@param cwd string
+---@param cb fun(code: integer, out: string|nil)
+local function git_once(key, args, cwd, cb)
+  if git_cache[key] then
+    return cb(0, git_cache[key])
+  end
+  if git_inflight[key] then
+    table.insert(git_inflight[key], cb)
+    return
+  end
+  git_inflight[key] = { cb }
+  require('azure_pr.actions')._git(args, { cwd = cwd }, function(code, out)
+    local waiting = git_inflight[key] or {}
+    git_inflight[key] = nil
+    if code == 0 then
+      git_cache[key] = out or ''
+    end
+    for _, f in ipairs(waiting) do
+      f(code, out)
+    end
+  end)
 end
 
 local function detab(s)
@@ -149,11 +179,12 @@ function M.get(pr, thread, cwd, cb)
     if cache[key] then
       return cb(cache[key])
     end
-    actions._git({ 'show', rev .. ':' .. path }, { cwd = cwd }, function(code, stdout)
+    git_once(table.concat({ 'show', cwd, rev, path }, '\0'), { 'show', rev .. ':' .. path }, cwd, function(code, stdout)
       if code ~= 0 then
         return cb(nil, UNAVAILABLE)
       end
-      actions._git({ 'diff', '-U3', revs.base, revs.right, '--', path }, { cwd = cwd }, function(dcode, dout)
+      local dargs = { 'diff', '--no-ext-diff', '--no-color', '-U3', revs.base, revs.right, '--', path }
+      git_once(table.concat({ 'diff', cwd, revs.base, revs.right, path }, '\0'), dargs, cwd, function(dcode, dout)
         if dcode ~= 0 then
           return cb(nil, UNAVAILABLE)
         end
@@ -162,11 +193,14 @@ function M.get(pr, thread, cwd, cb)
           table.remove(file_lines)
         end
         local rows = M.build(thread, file_lines, M.parse_hunks(dout))
+        if #rows == 0 then
+          return cb(nil, UNAVAILABLE) -- e.g. thread beyond EOF
+        end
         cache[key] = rows
         cb(rows)
       end)
     end)
-  end, { fetch = false })
+  end, { fetch = false, check_repo = true })
 end
 
 return M

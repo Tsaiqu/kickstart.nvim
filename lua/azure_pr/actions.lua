@@ -667,21 +667,64 @@ function M._open_diffview(range)
 end
 
 local revs_cache = {} ---@type table<string, {left:string, right:string, base:string}>
+local revs_failed = {} ---@type table<string, string> resolve errors, cached per key for the session
+local revs_inflight = {} ---@type table<string, fun(err: string|nil, revs: table|nil)[]>
+
+--- Check that the clone at `cwd` has an `origin` of the PR's repository (cb(err), err nil when ok).
+--- An unparsable remote or a PR without repository info passes.
+---@param pr AzurePR
+---@param cwd string
+---@param cb fun(err: string|nil)
+local function check_repo(pr, cwd, cb)
+  M._git({ 'remote', 'get-url', 'origin' }, { cwd = cwd }, function(code, stdout, stderr)
+    if code ~= 0 then
+      return cb('no origin remote in ' .. cwd .. ' (' .. git_err(stderr, 'git remote failed') .. ')')
+    end
+    local remote = util.parse_remote(vim.trim(stdout or ''))
+    local want = pr.repository and pr.repository.name
+    if remote and remote.repository and want and lower(remote.repository) ~= lower(want) then
+      return cb(string.format('cwd is a clone of %s, but !%s belongs to %s', remote.repository, tostring(pr.id), want))
+    end
+    cb(nil)
+  end)
+end
 
 --- Resolve the commits of a PR in the clone at `cwd`: `left` (target), `right` (source) and `base`
 --- (their merge base = left side of diffview's `left...right`). Each side prefers the PR's
 --- last-merge commit, then origin/<branch>, then the commit fetched by id.
---- Results are cached per (cwd, pr, source/target commit) unless `opts.cache == false`.
+--- Results (and failures) are cached per (cwd, pr, source/target commit) unless `opts.cache == false`;
+--- concurrent calls for one key share a single git sequence.
 ---@param pr AzurePR
 ---@param cwd string
 ---@param cb fun(err: string|nil, revs: {left: string, right: string, base: string}|nil)
----@param opts {fetch: boolean|nil, cache: boolean|nil, base: boolean|nil}|nil base = false skips the merge-base lookup (revs.base is then nil)
+---@param opts {fetch: boolean|nil, cache: boolean|nil, base: boolean|nil, check_repo: boolean|nil}|nil base = false skips the merge-base lookup (revs.base is then nil); check_repo = true first verifies that cwd is a clone of the PR's repository
 function M.resolve_pr_revs(pr, cwd, cb, opts)
   opts = opts or {}
   local use_cache = opts.cache ~= false
   local key = table.concat({ cwd, tostring(pr.id), pr.source_commit or '', pr.target_commit or '' }, '\0')
-  if use_cache and revs_cache[key] then
-    return cb(nil, revs_cache[key])
+  if use_cache then
+    if revs_cache[key] then
+      return cb(nil, revs_cache[key])
+    end
+    if revs_failed[key] then
+      return cb(revs_failed[key])
+    end
+    if revs_inflight[key] then
+      table.insert(revs_inflight[key], cb)
+      return
+    end
+    revs_inflight[key] = { cb }
+    local orig = cb
+    cb = function(err, revs)
+      local waiting = revs_inflight[key] or { orig }
+      revs_inflight[key] = nil
+      if err then
+        revs_failed[key] = err
+      end
+      for _, f in ipairs(waiting) do
+        f(err, revs)
+      end
+    end
   end
 
   --- First of `candidates` that resolves to a commit locally -> cb2(rev) or cb2(nil).
@@ -745,9 +788,24 @@ function M.resolve_pr_revs(pr, cwd, cb, opts)
     end)
   end
 
-  if opts.fetch == false then
-    return resolve_all(nil)
+  local function start()
+    if opts.fetch == false then
+      return resolve_all(nil)
+    end
+    M._resolve_fetch(pr, cwd, resolve_all)
   end
+  if opts.check_repo then
+    return check_repo(pr, cwd, function(err)
+      if err then
+        return cb(err)
+      end
+      start()
+    end)
+  end
+  start()
+end
+
+function M._resolve_fetch(pr, cwd, resolve_all)
   local refspecs = { 'fetch', 'origin' }
   for _, b in ipairs { pr.target_branch, pr.source_branch } do
     table.insert(refspecs, '+refs/heads/' .. b .. ':refs/remotes/origin/' .. b)
@@ -799,14 +857,9 @@ function M.diff(pr, cb)
   end
 
   -- diffview works on cwd's repository: refuse to diff a different repo's refs
-  M._git({ 'remote', 'get-url', 'origin' }, { cwd = cwd }, function(code, stdout, stderr)
-    if code ~= 0 then
-      return done('no origin remote in ' .. cwd .. ' (' .. git_err(stderr, 'git remote failed') .. ')')
-    end
-    local remote = util.parse_remote(vim.trim(stdout or ''))
-    local want = pr.repository and pr.repository.name
-    if remote and remote.repository and want and lower(remote.repository) ~= lower(want) then
-      return done(string.format('cwd is a clone of %s, but !%s belongs to %s', remote.repository, tostring(pr.id), want))
+  check_repo(pr, cwd, function(err)
+    if err then
+      return done(err)
     end
     fetch_and_open()
   end)

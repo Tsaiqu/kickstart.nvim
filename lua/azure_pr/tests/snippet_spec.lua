@@ -134,7 +134,7 @@ describe('snippet.get', function()
     setup()
     snippet.get({}, thread, '/repo', function() end)
     eq('show R:src/a.py', calls[1])
-    truthy(calls[2]:find('diff -U3 B R -- src/a.py', 1, true))
+    truthy(calls[2]:find('diff --no-ext-diff --no-color -U3 B R -- src/a.py', 1, true))
     setup()
     snippet.get({}, vim.tbl_extend('force', thread, { side = 'left' }), '/repo', function() end)
     eq('show B:src/a.py', calls[1])
@@ -161,5 +161,56 @@ describe('snippet.get', function()
     eq(nil, r)
     eq('code unavailable', e)
     eq(0, #calls)
+  end)
+
+  it('passes --no-ext-diff and --no-color to git diff', function()
+    setup()
+    snippet.get({}, thread, '/repo', function() end)
+    truthy(calls[2]:find('--no-ext-diff --no-color', 1, true))
+  end)
+
+  it('reports a thread beyond EOF as code unavailable', function()
+    setup()
+    local r, e
+    snippet.get({}, vim.tbl_extend('force', thread, { line = 99, end_line = 99 }), '/repo', function(rows, err) r, e = rows, err end)
+    eq(nil, r)
+    eq('code unavailable', e)
+  end)
+
+  it('runs show/diff once for concurrent threads of one file', function()
+    setup()
+    local held = {}
+    local orig = actions._git
+    actions._git = function(args, o, cb)
+      table.insert(held, function() orig(args, o, cb) end)
+    end
+    local done = 0
+    for l = 1, 3 do
+      snippet.get({}, vim.tbl_extend('force', thread, { line = l, end_line = l }), '/repo', function() done = done + 1 end)
+    end
+    while #held > 0 do table.remove(held, 1)() end
+    eq(3, done)
+    eq(2, #calls)
+  end)
+
+  it('uses the real resolve: wrong-repo cwd -> no fetch, code unavailable for all', function()
+    setup()
+    package.loaded['azure_pr.actions'] = nil
+    actions = require 'azure_pr.actions'
+    local git = {}
+    actions._git = function(args, _, cb)
+      table.insert(git, table.concat(args, ' '))
+      if args[1] == 'remote' then
+        return cb(0, 'https://dev.azure.com/o/p/_git/other\n', '')
+      end
+      cb(0, '', '')
+    end
+    local errs = {}
+    local pr = { id = 7, source_branch = 'f', target_branch = 'main', source_commit = 's', target_commit = 't', repository = { name = 'mine' } }
+    for l = 1, 4 do
+      snippet.get(pr, vim.tbl_extend('force', thread, { line = l }), '/repo', function(_, e) table.insert(errs, e) end)
+    end
+    eq({ 'code unavailable', 'code unavailable', 'code unavailable', 'code unavailable' }, errs)
+    eq({ 'remote get-url origin' }, git)
   end)
 end)
