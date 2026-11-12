@@ -191,13 +191,13 @@ function M.place(buf, pr, threads, opts)
     if #group > 1 then
       text = text .. ' [+' .. (#group - 1) .. ' threads]'
     end
-    pcall(vim.api.nvim_buf_set_extmark, buf, M.ns, lnum - 1, 0, {
+    local ok_mark, mark_id = pcall(vim.api.nvim_buf_set_extmark, buf, M.ns, lnum - 1, 0, {
       sign_text = open and icons.thread_active or icons.thread_resolved,
       sign_hl_group = open and 'AzurePRThreadActive' or 'AzurePRInlineResolved',
       virt_text = { { '  ' .. text, open and 'AzurePRInlineHint' or 'AzurePRInlineResolved' } },
       virt_text_pos = 'eol',
     })
-    st.marks[#st.marks + 1] = { lnum = lnum, thread_ids = ids, threads = group }
+    st.marks[#st.marks + 1] = { id = ok_mark and mark_id or nil, lnum = lnum, thread_ids = ids, threads = group }
   end
 
   vim.b[buf].azure_pr_inline = { pr_id = pr and pr.id, side = opts.side, path = opts.path }
@@ -315,6 +315,8 @@ function M.show_thread(buf, lnum)
     title_pos = 'left',
   })
   vim.wo[win].wrap = true
+  -- AzurePRCommentBody links to Normal: keep the float background instead of painting Normal over it
+  vim.wo[win].winhighlight = 'NormalFloat:NormalFloat,AzurePRCommentBody:NormalFloat'
 
   local function close()
     if vim.api.nvim_win_is_valid(win) then
@@ -332,7 +334,14 @@ function M.show_thread(buf, lnum)
       r = r - 1
       item = items[r]
     end
-    item = item or items[next(items)]
+    if not item then
+      local low
+      for l, it in pairs(items) do
+        if not low or l < low then
+          low, item = l, it
+        end
+      end
+    end
     local t = item and item.thread or threads[1]
     return t, item and item.kind == 'comment' and item.comment or nil
   end
@@ -374,6 +383,18 @@ function M.show_thread(buf, lnum)
   end, 'Open PR in browser')
 end
 
+--- Current 1-based line of a mark (extmarks move with edits); the place-time line without an extmark.
+local function mark_lnum(buf, m)
+  if not m.id then
+    return m.lnum
+  end
+  local ok, pos = pcall(vim.api.nvim_buf_get_extmark_by_id, buf, M.ns, m.id, {})
+  if not ok or not pos or pos[1] == nil then
+    return nil
+  end
+  return pos[1] + 1
+end
+
 --- Threads anchored on `lnum` (1-based).
 ---@param buf integer
 ---@param lnum integer
@@ -383,12 +404,13 @@ function M.threads_at(buf, lnum)
   if not st then
     return {}
   end
+  local out = {}
   for _, m in ipairs(st.marks) do
-    if m.lnum == lnum then
-      return m.threads
+    if mark_lnum(buf, m) == lnum then
+      vim.list_extend(out, m.threads)
     end
   end
-  return {}
+  return out
 end
 
 --- Move the cursor to the next/previous line with a thread (wraps around).
@@ -396,7 +418,20 @@ end
 ---@param dir integer 1|-1
 function M.jump(buf, dir)
   local st = state[buf]
-  if not st or #st.marks == 0 then
+  if not st then
+    return
+  end
+  local lines, seen = {}, {}
+  for _, m in ipairs(st.marks) do
+    local l = mark_lnum(buf, m)
+    if l and not seen[l] then
+      seen[l] = true
+      lines[#lines + 1] = l
+    end
+  end
+  table.sort(lines)
+  local n = #lines
+  if n == 0 then
     return
   end
   local win = vim.fn.bufwinid(buf)
@@ -404,21 +439,20 @@ function M.jump(buf, dir)
     win = vim.api.nvim_get_current_win()
   end
   local cur = vim.api.nvim_win_get_cursor(win)[1]
-  local n = #st.marks
   local target
   if dir > 0 then
-    target = st.marks[1].lnum
-    for _, m in ipairs(st.marks) do
-      if m.lnum > cur then
-        target = m.lnum
+    target = lines[1]
+    for _, l in ipairs(lines) do
+      if l > cur then
+        target = l
         break
       end
     end
   else
-    target = st.marks[n].lnum
+    target = lines[n]
     for i = n, 1, -1 do
-      if st.marks[i].lnum < cur then
-        target = st.marks[i].lnum
+      if lines[i] < cur then
+        target = lines[i]
         break
       end
     end
