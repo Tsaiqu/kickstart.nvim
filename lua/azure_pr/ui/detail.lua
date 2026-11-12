@@ -835,7 +835,7 @@ local function jump_thread(dir)
   local l = cur + dir
   while l >= 1 and l <= n do
     local it = st.items[l]
-    if it and it.kind == 'thread' then
+    if it and it.kind == 'thread' and it.top then
       vim.api.nvim_win_set_cursor(0, { l, 0 })
       return
     end

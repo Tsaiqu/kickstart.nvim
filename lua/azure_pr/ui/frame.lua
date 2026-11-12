@@ -5,6 +5,7 @@ local M = {}
 local function dw(s)
   return vim.fn.strdisplaywidth(s)
 end
+M.dw = dw
 
 local function segs_width(segs)
   local w = 0
@@ -28,7 +29,7 @@ local function truncate_segs(segs, max)
   for _, seg in ipairs(segs) do
     local w = dw(seg[1])
     if used + w <= budget then
-      out[#out + 1] = { seg[1], seg[2] }
+      out[#out + 1] = { seg[1], seg[2], seg[3] }
       used = used + w
     else
       local chars, cur = {}, used
@@ -40,12 +41,14 @@ local function truncate_segs(segs, max)
         chars[#chars + 1] = ch
         cur = cur + cw
       end
-      out[#out + 1] = { table.concat(chars) .. '…', seg[2] }
+      out[#out + 1] = { table.concat(chars) .. '…', seg[2], seg[3] }
       return out
     end
   end
   return out
 end
+
+M.truncate_segs = truncate_segs
 
 ---@param width integer
 ---@return integer

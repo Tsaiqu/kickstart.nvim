@@ -14,9 +14,8 @@ local function icons_for(opts)
   return require('azure_pr.ui.highlights').icons()
 end
 
-local function dw(s)
-  return vim.fn.strdisplaywidth(s)
-end
+local frame = require 'azure_pr.ui.frame'
+local dw = frame.dw
 
 --- Replace any line breaks / tabs with spaces so the string is a single line.
 local function oneline(s)
@@ -119,6 +118,9 @@ local function builder()
       local text = oneline(seg[1])
       if seg[2] and #text > 0 then
         b.highlights[#b.highlights + 1] = { lnum0, col, col + #text, seg[2] }
+      end
+      if seg[3] and #text > 0 then -- optional second group over the same range
+        b.highlights[#b.highlights + 1] = { lnum0, col, col + #text, seg[3] }
       end
       parts[#parts + 1] = text
       col = col + #text
@@ -537,6 +539,77 @@ local function thread_location(thread)
   return 'General', false
 end
 
+--- Rows { segs, item } for the comments of a thread (author, date, wrapped body, replies).
+---@param thread table
+---@param o table { width, icons, now, user_id, pr }
+local function comment_rows(thread, o)
+  local icons = o.icons
+  local dot = ' ' .. (icons.dot or '-') .. ' '
+  local rows = {}
+  for _, entry in ipairs(comment_tree(thread.comments)) do
+    local c, depth = entry[1], entry[2]
+    local indent = string.rep(' ', depth * 2)
+    local body_indent = indent .. '  '
+    local citem = { kind = 'comment', pr = o.pr, thread = thread, comment = c, depth = depth }
+    local function add(segs)
+      rows[#rows + 1] = { segs = segs, item = citem }
+    end
+    if depth > 0 then
+      add {}
+    end
+    local author = oneline(c.author and (c.author.name or c.author.unique_name) or '?')
+    local when = relative_time(c.published_at, o.now)
+    local hsegs = {
+      { indent },
+      { ((depth > 0 and icons.reply or icons.comment) or '>') .. ' ', 'AzurePRMuted' },
+      { author, c.type == 'system' and 'AzurePRMuted' or 'AzurePRCommentAuthor' },
+    }
+    if when ~= '' then
+      hsegs[#hsegs + 1] = { dot .. when, 'AzurePRCommentDate' }
+    end
+    if c.updated_at and c.published_at and c.updated_at > c.published_at + 1 then
+      hsegs[#hsegs + 1] = { ' (edited)', 'AzurePRCommentDate' }
+    end
+    if o.user_id and c.author and c.author.id == o.user_id then
+      hsegs[#hsegs + 1] = { ' (you)', 'AzurePRMuted' }
+    end
+    add(hsegs)
+    if c.is_deleted then
+      add { { body_indent }, { '(deleted)', 'AzurePRMuted' } }
+    else
+      local paragraphs = split(c.content)
+      if #paragraphs == 0 then
+        add { { body_indent }, { '(empty)', 'AzurePRMuted' } }
+      end
+      local group = c.type == 'system' and 'AzurePRMuted' or 'AzurePRCommentBody'
+      for _, para in ipairs(paragraphs) do
+        if para:match '^%s*$' then
+          add {}
+        else
+          for _, l in ipairs(frame.wrap(para, math.max(o.width - dw(body_indent), 1))) do
+            add { { body_indent }, { l, group } }
+          end
+        end
+      end
+    end
+  end
+  return rows
+end
+M._comment_rows = comment_rows
+
+--- Comments of a thread without frame or code: { lines, highlights, items }.
+---@param thread table
+---@param opts table|nil { width = 80, icons, now, user_id, pr }
+function M.thread_lines(thread, opts)
+  opts = vim.tbl_extend('force', { width = 80, now = os.time() }, opts or {})
+  opts.icons = icons_for(opts)
+  local b = builder()
+  for _, row in ipairs(comment_rows(thread, opts)) do
+    b.add(row.segs, row.item)
+  end
+  return b.result()
+end
+
 ---@param pr table AzurePR
 ---@param threads table|nil list of normalized threads
 ---@param opts table|nil { statuses, policies, user_id, now, show_resolved = true, folded = { [thread_id] = true }, icons, date_format,
@@ -803,6 +876,7 @@ function M.pr_detail(pr, threads, opts)
     end
   end
 
+  local width = opts.width or 80
   for _, t in ipairs(visible) do
     local open = is_open(t)
     local t_hl = open and 'AzurePRThreadActive' or 'AzurePRThreadResolved'
@@ -811,65 +885,50 @@ function M.pr_detail(pr, threads, opts)
     local n_comments = #(t.comments or {})
     local thread_item = { kind = 'thread', pr = pr, thread = t, folded = is_folded }
     b.blank()
-    local segs = {
-      { (is_folded and icons.collapsed or icons.expanded) .. ' ', 'AzurePRGroup' },
+    local title = {
       { (open and icons.thread_active or icons.thread_resolved) .. ' ', t_hl },
       { M.THREAD_STATUS_LABEL[t.status or 'active'] or oneline(t.status), t_hl },
       { dot, 'AzurePRMuted' },
+      { oneline(loc), is_file and 'AzurePRPath' or 'AzurePRMuted' },
     }
-    if is_file then
-      segs[#segs + 1] = { (icons.file or '#') .. ' ', 'AzurePRFile' }
-      segs[#segs + 1] = { oneline(loc), 'AzurePRFile' }
-    else
-      segs[#segs + 1] = { loc, 'AzurePRMuted' }
-    end
     if is_folded then
-      segs[#segs + 1] = { '  (' .. n_comments .. (n_comments == 1 and ' comment' or ' comments') .. ')', 'AzurePRMuted' }
+      title[#title + 1] = { ' (' .. n_comments .. (n_comments == 1 and ' comment' or ' comments') .. ')', 'AzurePRMuted' }
     end
-    b.add(segs, thread_item)
+    -- the top border is the thread's anchor line (`top`); other frame lines share the thread item
+    b.add(frame.top(title, width, icons), vim.tbl_extend('force', thread_item, { top = true }))
 
     if not is_folded then
-      for _, entry in ipairs(comment_tree(t.comments)) do
-        local c, depth = entry[1], entry[2]
-        local indent = string.rep(' ', 4 + depth * 2)
-        local citem = { kind = 'comment', pr = pr, thread = t, comment = c, depth = depth }
-        local author = oneline(c.author and (c.author.name or c.author.unique_name) or '?')
-        local when = relative_time(c.published_at, now)
-        local hsegs = {
-          { indent },
-          { ((depth > 0 and icons.reply or icons.comment) or '>') .. ' ', 'AzurePRMuted' },
-          { author, c.type == 'system' and 'AzurePRMuted' or 'AzurePRCommentAuthor' },
-        }
-        if when ~= '' then
-          hsegs[#hsegs + 1] = { dot .. when, 'AzurePRCommentDate' }
-        end
-        if c.updated_at and c.published_at and c.updated_at > c.published_at + 1 then
-          hsegs[#hsegs + 1] = { ' (edited)', 'AzurePRCommentDate' }
-        end
-        if opts.user_id and c.author and c.author.id == opts.user_id then
-          hsegs[#hsegs + 1] = { ' (you)', 'AzurePRMuted' }
-        end
-        b.add(hsegs, citem)
-        local body_indent = indent .. '  '
-        if c.is_deleted then
-          b.add({ { body_indent }, { '(deleted)', 'AzurePRMuted' } }, citem)
-        else
-          local body = split(c.content)
-          if #body == 0 then
-            b.add({ { body_indent }, { '(empty)', 'AzurePRMuted' } }, citem)
+      local function frow(segs, item, fill)
+        b.add(frame.row(segs, width, icons, fill), item or thread_item)
+      end
+      local snip = is_file and t.id ~= nil and opts.snippets and opts.snippets[t.id] or nil
+      local has_code = false
+      if snip == 'loading' then
+        frow { { 'Loading code…', 'AzurePRMuted' } }
+        has_code = true
+      elseif snip == 'unavailable' then
+        frow { { '(code unavailable)', 'AzurePRMuted' } }
+        has_code = true
+      elseif type(snip) == 'table' then
+        for _, r in ipairs(snip) do
+          local ln = r.kind == '-' and r.old or r.new
+          local kind_hl = r.kind == '+' and 'AzurePRCodeAdd' or (r.kind == '-' and 'AzurePRCodeDel' or nil)
+          local text_seg = { r.kind .. oneline(r.text), kind_hl, r.focus and 'AzurePRCodeFocus' or nil }
+          if kind_hl == nil and r.focus then
+            text_seg[2], text_seg[3] = 'AzurePRCodeFocus', nil
           end
-          for _, l in ipairs(body) do
-            if l == '' then
-              b.add('', citem)
-            elseif c.type == 'system' then
-              b.add({ { body_indent }, { l, 'AzurePRMuted' } }, citem)
-            else
-              b.add(body_indent .. l, citem)
-            end
-          end
+          frow({ { string.format('%4s ', ln and tostring(ln) or ''), 'AzurePRLineNr' }, text_seg }, nil, 'AzurePRCodeBg')
+          has_code = true
         end
       end
+      if has_code and n_comments > 0 then
+        frow {}
+      end
+      for _, row in ipairs(M._comment_rows(t, { width = frame.inner_width(width), icons = icons, now = now, user_id = opts.user_id, pr = pr })) do
+        b.add(frame.row(row.segs, width, icons), row.item)
+      end
     end
+    b.add(frame.bottom(width, icons), thread_item)
   end
 
   return b.result()

@@ -433,7 +433,7 @@ describe('render.pr_detail', function()
     truthy(find_line(old, 'Comments  2 active - 1/3 resolved - oldest first'))
 
     local function indent(l)
-      return #res.lines[l]:match '^( *)'
+      return #res.lines[l]:match '^| ( *)' -- inside the frame
     end
     local top = find_line(res, 'Anna', t1)
     local r1 = find_line(res, '\\ me', t1)
@@ -467,7 +467,7 @@ describe('render.pr_detail', function()
     local res = do_render { folded = { [1] = true } }
     local t1 = find_line(res, 'Active - General')
     contains(res.lines[t1], '(4 comments)')
-    contains(res.lines[t1], '> ') -- collapsed icon in ascii
+    eq(t1 + 1, find_line(res, '+----', t1), 'folded thread is just top + bottom')
     truthy(res.items[t1].folded)
     falsy(find_line(res, 'Top level'))
     truthy(find_line(res, 'Fix this'))
@@ -485,7 +485,7 @@ describe('render.pr_detail', function()
     end
     truthy(groups['AzurePRThreadResolved' .. t2])
     truthy(groups['AzurePRThreadActive' .. t1])
-    truthy(groups['AzurePRFile' .. t2])
+    truthy(groups['AzurePRPath' .. t2])
   end)
 
   it('never emits newlines from any field', function()
@@ -567,5 +567,150 @@ describe('render (review fixes)', function()
     local res = render.pr_list({}, { icons = icons, total = 200, truncated = true })
     contains(res.lines[1], '(0/200+)')
     contains(res.lines[1], 'max_prs reached')
+  end)
+end)
+
+describe('render.pr_detail thread frames', function()
+  local frame = require 'azure_pr.ui.frame'
+  local snippet = require 'azure_pr.snippet'
+  local pr = mkpr(7)
+  local long = string.rep('word ', 40)
+  local file_thread = {
+    id = 1,
+    status = 'active',
+    file_path = '/src/a.py',
+    line = 42,
+    end_line = 43,
+    comments = { comment(10, 0, 'Anna', 'First line\n\nthird ' .. long, NOW - DAY), comment(11, 10, 'Bob', 'reply', NOW - 60) },
+  }
+  local rows = {
+    { kind = ' ', old = 41, new = 41, text = 'ctx', focus = false },
+    { kind = '-', old = 42, text = 'old', focus = false },
+    { kind = '+', new = 42, text = 'new42', focus = true },
+    { kind = ' ', old = 43, new = 43, text = 'ctx focus', focus = true },
+  }
+  local function render_one(t, o)
+    local res = render.pr_detail(pr, { t }, vim.tbl_extend('force', { now = NOW, icons = icons, snippets = { [t.id] = rows } }, o or {}))
+    check_result(res)
+    return res
+  end
+  local function hl_on(res, lnum, group)
+    for _, h in ipairs(res.highlights) do
+      if h[1] == lnum - 1 and h[4] == group then
+        return h
+      end
+    end
+  end
+  local function frame_range(res)
+    local top = find_line(res, '+- ')
+    local bot = find_line(res, '+----', top + 1)
+    return top, bot
+  end
+
+  it('keeps every frame line at the requested display width', function()
+    for _, w in ipairs { 60, 40 } do
+      local res = render_one(file_thread, { width = w })
+      local top, bot = frame_range(res)
+      truthy(bot > top + 3)
+      for l = top, bot do
+        eq(w, vim.fn.strdisplaywidth(res.lines[l]), 'line ' .. l .. ': ' .. res.lines[l])
+      end
+    end
+    -- nerd icons too
+    local nerd = hl.icons(true)
+    local res = render_one(file_thread, { width = 50, icons = nerd })
+    for l = 2, #res.lines do
+      if res.lines[l]:find(nerd.box_v, 1, true) or res.lines[l]:find(nerd.box_tl, 1, true) then
+        eq(50, vim.fn.strdisplaywidth(res.lines[l]))
+      end
+    end
+  end)
+
+  it('shows the path with AzurePRPath and highlights code and body', function()
+    local res = render_one(file_thread, { width = 60 })
+    local top, bot = frame_range(res)
+    contains(res.lines[top], 'src/a.py:42-43')
+    local h = hl_on(res, top, 'AzurePRPath')
+    truthy(h)
+    eq('src/a.py:42-43', res.lines[top]:sub(h[2] + 1, h[3]))
+    truthy(hl_on(res, top, 'AzurePRBorder'))
+    local add = find_line(res, '+new42')
+    truthy(hl_on(res, add, 'AzurePRCodeAdd'))
+    truthy(hl_on(res, add, 'AzurePRCodeFocus'))
+    contains(res.lines[add], '  42 +new42')
+    local del = find_line(res, '-old')
+    truthy(hl_on(res, del, 'AzurePRCodeDel'))
+    falsy(hl_on(res, del, 'AzurePRCodeFocus'))
+    contains(res.lines[del], '  42 -old')
+    local ctx = find_line(res, 'ctx focus')
+    truthy(hl_on(res, ctx, 'AzurePRCodeFocus'))
+    truthy(hl_on(res, ctx, 'AzurePRCodeBg'))
+    local body = find_line(res, 'First line')
+    truthy(hl_on(res, body, 'AzurePRCommentBody'))
+    truthy(bot)
+  end)
+
+  it('wraps long comment bodies and keeps empty paragraphs as empty rows', function()
+    local t = { id = 2, status = 'active', comments = { comment(1, 0, 'Anna', 'a\n\n' .. string.rep('word ', 40), NOW) } }
+    local res = render_one(t, { width = 40 })
+    local top, bot = frame_range(res)
+    truthy(bot - top > 6)
+    for l = top, bot do
+      eq(40, vim.fn.strdisplaywidth(res.lines[l]))
+    end
+    local a = find_line(res, '|   a')
+    eq(string.rep(' ', 36), res.lines[a + 1]:sub(3, -3), 'empty paragraph row')
+  end)
+
+  it('shows loading / unavailable placeholders and omits code for general threads', function()
+    local res = render_one(file_thread, { width = 60, snippets = { [1] = 'unavailable' } })
+    truthy(find_line(res, '(code unavailable)'))
+    res = render_one(file_thread, { width = 60, snippets = { [1] = 'loading' } })
+    truthy(find_line(res, 'Loading code…'))
+    local gen = { id = 3, status = 'active', comments = { comment(1, 0, 'Anna', 'hi', NOW) } }
+    res = render_one(gen, { width = 60 })
+    contains(res.lines[find_line(res, '+- ')], 'General')
+    falsy(find_line(res, '+new42'))
+    falsy(find_line(res, 'ctx', 1))
+  end)
+
+  it('folds to exactly top + bottom with the comment count', function()
+    local res = render_one(file_thread, { width = 60, folded = { [1] = true } })
+    local top, bot = frame_range(res)
+    eq(top + 1, bot)
+    contains(res.lines[top], '(2 comments)')
+    eq(60, vim.fn.strdisplaywidth(res.lines[top]))
+    eq('thread', res.items[top].kind)
+  end)
+
+  it('maps frame lines to the thread and comment lines to their comment', function()
+    local res = render_one(file_thread, { width = 60 })
+    local top, bot = frame_range(res)
+    eq('thread', res.items[top].kind)
+    eq('thread', res.items[find_line(res, '+new42')].kind)
+    eq('thread', res.items[bot].kind)
+    eq(10, res.items[find_line(res, 'First line')].comment.id)
+    eq('comment', res.items[find_line(res, 'First line')].kind)
+    eq(11, res.items[find_line(res, 'reply', top)].comment.id)
+    eq(11, res.items[find_line(res, 'Bob', top)].comment.id)
+  end)
+
+  it('works with rows built by snippet.build', function()
+    local r = snippet.build({ line = 2, end_line = 2 }, { 'a', 'b', 'c' }, {})
+    local res = render_one(file_thread, { width = 50, snippets = { [1] = r } })
+    truthy(find_line(res, 'b'))
+  end)
+
+  it('thread_lines returns comments without frame characters', function()
+    local res = render.thread_lines(file_thread, { width = 50, icons = icons, now = NOW })
+    check_result(res)
+    truthy(#res.lines > 3)
+    for i, l in ipairs(res.lines) do
+      falsy(l:find('|', 1, true), l)
+      falsy(l:find('+-', 1, true), l)
+      truthy(vim.fn.strdisplaywidth(l) <= 50, 'line ' .. i)
+    end
+    eq(10, res.items[1].comment.id)
+    truthy(find_line(res, 'Bob'))
   end)
 end)
