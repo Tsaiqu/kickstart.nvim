@@ -253,6 +253,20 @@ return {
     },
     nesting_rules = {},
     filesystem = {
+      -- Deep search (`/`, `f`) uses fd. Without --hidden fd skips dot-dirs (e.g. `.config`),
+      -- so files nested inside them were never found.
+      search_limit = 200,
+      find_args = function(cmd, _, _, args)
+        if cmd ~= 'fd' then
+          return args
+        end
+        table.insert(args, '--hidden')
+        for _, dir in ipairs { '.git', 'node_modules', '.venv', '__pycache__', '.mypy_cache', '.pytest_cache' } do
+          table.insert(args, '--exclude')
+          table.insert(args, dir)
+        end
+        return args
+      end,
       filtered_items = {
         visible = false, -- when true, they will just be displayed differently than normal items
         show_hidden_count = false, -- don't show "(x hidden items)" placeholder line
