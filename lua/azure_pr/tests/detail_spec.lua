@@ -727,6 +727,132 @@ describe('ui.detail (review fixes)', function()
     falsy(text:find('No comments yet', 1, true))
     restore()
   end)
+
+  describe('snippets, width and store', function()
+    local function with_snippet(get)
+      local snip = { calls = {}, clear_cache = function() end }
+      snip.get = function(pr, t, cwd, cb)
+        table.insert(snip.calls, { pr = pr, thread = t, cwd = cwd })
+        get(t, cb)
+      end
+      package.loaded['azure_pr.snippet'] = snip
+      return snip
+    end
+
+    it('shows Loading code, then fetched code lines, rendering once for many threads', function()
+      local detail, _, _, _, restore = setup()
+      local pending = {}
+      local snip = with_snippet(function(t, cb)
+        pending[#pending + 1] = { t = t, cb = cb }
+      end)
+      local buf = detail.open(normalized_pr(), { split = 'current' })
+      truthy(loaded(detail, buf))
+      truthy(#pending > 0)
+      eq(vim.fn.getcwd(), snip.calls[1].cwd)
+      contains(table.concat(lines(buf), '\n'), 'Loading code…')
+      local renders = 0
+      local orig = require('azure_pr.ui.render').pr_detail
+      require('azure_pr.ui.render').pr_detail = function(...)
+        renders = renders + 1
+        return orig(...)
+      end
+      for _, p in ipairs(pending) do
+        p.cb({ { kind = ' ', new = 42, old = 42, text = 'local snippet_marker = 1', focus = true } })
+      end
+      wait_for(function()
+        return table.concat(lines(buf), '\n'):find('snippet_marker', 1, true) ~= nil
+      end, 1000)
+      contains(table.concat(lines(buf), '\n'), 'local snippet_marker = 1')
+      falsy(table.concat(lines(buf), '\n'):find('Loading code', 1, true))
+      eq(1, renders)
+      require('azure_pr.ui.render').pr_detail = orig
+      restore()
+    end)
+
+    it('shows (code unavailable) when the snippet fails', function()
+      local detail, _, _, _, restore = setup()
+      with_snippet(function(_, cb)
+        cb(nil, 'code unavailable')
+      end)
+      local buf = detail.open(normalized_pr(), { split = 'current' })
+      truthy(loaded(detail, buf))
+      wait_for(function()
+        return table.concat(lines(buf), '\n'):find('(code unavailable)', 1, true) ~= nil
+      end, 1000)
+      contains(table.concat(lines(buf), '\n'), '(code unavailable)')
+      restore()
+    end)
+
+    it('does not refetch snippets on refresh when source_commit is unchanged', function()
+      local detail, _, _, _, restore = setup()
+      local snip = with_snippet(function(_, cb)
+        cb { { kind = ' ', new = 1, old = 1, text = 'x', focus = true } }
+      end)
+      local buf = detail.open(normalized_pr(), { split = 'current' })
+      truthy(loaded(detail, buf))
+      local n = #snip.calls
+      truthy(n > 0)
+      local done = false
+      detail.refresh(buf, function()
+        done = true
+      end)
+      wait_for(function()
+        return done
+      end, 2000)
+      eq(n, #snip.calls)
+      detail.get_state(buf).snippets_commit = 'older-commit' -- as if the PR head moved since
+      done = false
+      detail.refresh(buf, function()
+        done = true
+      end)
+      wait_for(function()
+        return done
+      end, 2000)
+      truthy(#snip.calls > n)
+      restore()
+    end)
+
+    it('stores unfiltered threads in threads_store', function()
+      local detail, _, _, _, restore = setup()
+      with_snippet(function() end)
+      local buf = detail.open(normalized_pr(), { split = 'current' })
+      truthy(loaded(detail, buf))
+      local e = require('azure_pr.threads_store').get(101)
+      truthy(e)
+      truthy(#e.threads > 0)
+      for _, t in ipairs(e.threads) do
+        falsy(t.is_system)
+      end
+      restore()
+    end)
+
+    it('re-renders frames with the new width on WinResized', function()
+      local detail, _, _, _, restore = setup()
+      with_snippet(function() end)
+      vim.cmd 'silent! only'
+      vim.cmd 'vsplit'
+      local buf = detail.open(normalized_pr(), { split = 'current' })
+      truthy(loaded(detail, buf))
+      local win = vim.fn.bufwinid(buf)
+      local function frame_width()
+        for _, l in ipairs(lines(buf)) do
+          if l:match '^%+%-.*%-%+$' then
+            return vim.fn.strdisplaywidth(l)
+          end
+        end
+      end
+      vim.api.nvim_win_set_width(win, 50)
+      vim.cmd 'doautocmd WinResized'
+      local w1 = frame_width()
+      vim.api.nvim_win_set_width(win, 70)
+      vim.cmd 'doautocmd WinResized'
+      local w2 = frame_width()
+      eq(50, w1)
+      eq(70, w2)
+      truthy(w1 and w2 and w2 > w1, 'frame widens: ' .. tostring(w1) .. ' -> ' .. tostring(w2))
+      restore()
+    end)
+  end)
 end)
 
 cleanup()

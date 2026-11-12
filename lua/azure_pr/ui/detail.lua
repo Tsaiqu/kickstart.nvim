@@ -199,6 +199,19 @@ end
 
 local keymap_config -- defined below (keymaps section)
 
+--- Frame width for the buffer: first window's text area (min 40); 80 when the buffer has no window.
+---@param buf integer
+---@return integer
+local function frame_width(buf)
+  local win = wins_of(buf)[1]
+  if not win then
+    return 80
+  end
+  local ok, info = pcall(vim.fn.getwininfo, win)
+  local textoff = ok and info and info[1] and info[1].textoff or 0
+  return math.max(40, vim.api.nvim_win_get_width(win) - textoff)
+end
+
 local function render(buf, opts)
   opts = opts or {}
   local st = M._states[buf]
@@ -246,7 +259,11 @@ local function render(buf, opts)
     saved[w] = { cursor = cur, anchor = opts.anchor or a, offset = offset }
   end
 
+  local width = frame_width(buf)
+  st.render_width = width
   local res = R.pr_detail(st.pr, st.threads or {}, {
+    width = width,
+    snippets = st.snippets,
     statuses = st.statuses,
     policies = st.policies,
     user_id = st.user_id,
@@ -288,6 +305,18 @@ local function render(buf, opts)
 end
 
 M._render = render
+
+-- Re-render detail buffers whose window width changed (frames are sized to the window).
+vim.api.nvim_create_autocmd({ 'WinResized', 'VimResized' }, {
+  group = vim.api.nvim_create_augroup('AzurePRDetailResize', { clear = true }),
+  callback = function()
+    for buf, st in pairs(M._states) do
+      if usable(buf) and #wins_of(buf) > 0 and st.render_width ~= frame_width(buf) then
+        render(buf)
+      end
+    end
+  end,
+})
 
 --------------------------------------------------------------------------------
 -- Loading
@@ -342,6 +371,48 @@ function load_definition_names(buf, st)
       render(buf)
     end
   end)
+end
+
+--- Start code snippet fetches for file threads that have no entry yet. Entries are 'loading', then
+--- rows or 'unavailable'; all results arriving in the same tick trigger a single render.
+---@param buf integer
+---@param st table
+local function fetch_snippets(buf, st)
+  local commit = st.pr and st.pr.source_commit
+  if st.snippets == nil or st.snippets_commit ~= commit then
+    st.snippets = {}
+    st.snippets_commit = commit
+  end
+  local snippets = st.snippets
+  local snippet = require 'azure_pr.snippet'
+  local cwd = vim.fn.getcwd()
+  local render_scheduled = false
+  local function schedule_render()
+    if render_scheduled then
+      return
+    end
+    render_scheduled = true
+    vim.schedule(function()
+      if M._states[buf] == st and st.snippets == snippets and usable(buf) then
+        render(buf)
+      end
+    end)
+  end
+  for _, t in ipairs(st.threads or {}) do
+    if t.id ~= nil and t.file_path and t.line and snippets[t.id] == nil then
+      snippets[t.id] = 'loading'
+      local ok = pcall(snippet.get, st.pr, t, cwd, function(rows, err)
+        if st.snippets ~= snippets then
+          return -- invalidated (source commit changed)
+        end
+        snippets[t.id] = (not err and rows) or 'unavailable'
+        schedule_render()
+      end)
+      if not ok then
+        snippets[t.id] = 'unavailable'
+      end
+    end
+  end
 end
 
 --- Fetch everything for the buffer. PR, threads, statuses, policy evaluations and the current user
@@ -405,6 +476,11 @@ local function load(buf, done)
         st.threads = models().normalize_threads(res.threads, { include_system = st.include_system })
         st.threads_loaded = true
         st.threads_error = nil
+        -- shared store: never filtered by the detail's toggles
+        pcall(function()
+          require('azure_pr.threads_store').set(st.pr, models().normalize_threads(res.threads, { include_system = false }))
+        end)
+        fetch_snippets(buf, st)
         -- keep the list's comment column in sync (only when the list is loaded at all)
         local list = package.loaded['azure_pr.ui.list']
         if list and list.set_comment_stats then
