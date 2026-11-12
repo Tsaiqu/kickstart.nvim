@@ -334,7 +334,7 @@ describe('e2e', function()
     contains(dtext, 'Please add a test')
     contains(dtext, 'for the timeout path')
     contains(dtext, 'Agreed, will fix')
-    contains(dtext, 'src/http/client.lua:42')
+    contains(dtext, 'Active #11 - src/http/client.lu')
     contains(dtext, 'Looks good overall')
     contains(dtext, 'ci/build')
     contains(dtext, 'Required reviewers approved')
@@ -409,7 +409,7 @@ describe('e2e', function()
       end, 3000),
       'thread status refreshed'
     )
-    contains(buf_text(dbuf), 'Resolved - ')
+    contains(buf_text(dbuf), 'Resolved #11 - ')
     if vim.env.AZURE_PR_E2E_DUMP then
       print('\n--- list ---\n' .. buf_text(lbuf) .. '\n--- detail ---\n' .. buf_text(dbuf))
     end

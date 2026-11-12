@@ -416,20 +416,20 @@ describe('render.pr_detail', function()
   it('renders threads with counts, locations and nested replies', function()
     local res = do_render()
     truthy(find_line(res, 'Comments  2 active - 1/3 resolved - newest first'))
-    local t1 = find_line(res, 'Active - General')
+    local t1 = find_line(res, 'Active #1 - General')
     truthy(t1)
     eq('thread', res.items[t1].kind)
     eq(1, res.items[t1].thread.id)
-    local t2 = find_line(res, 'Resolved - ')
+    local t2 = find_line(res, 'Resolved #')
     contains(res.lines[t2], 'src/main.lua:42')
     falsy(res.lines[t2]:find('/src', 1, true))
-    local t3 = find_line(res, 'Pending - ')
+    local t3 = find_line(res, 'Pending #')
     contains(res.lines[t3], 'lua/x.lua:5-8')
     -- newest threads first, by when they were started (replies do not move them):
     -- #3 and #2 (1d ago, higher id first), then #1 (2d ago, despite a reply 1m ago)
     truthy(t3 < t2 and t2 < t1)
     local old = do_render { comment_order = 'oldest' }
-    truthy(find_line(old, 'Active - General') < find_line(old, 'Pending - '))
+    truthy(find_line(old, 'Active #1 - General') < find_line(old, 'Pending #'))
     truthy(find_line(old, 'Comments  2 active - 1/3 resolved - oldest first'))
 
     local function indent(l)
@@ -457,15 +457,15 @@ describe('render.pr_detail', function()
 
   it('hides resolved threads when show_resolved = false', function()
     local res = do_render { show_resolved = false }
-    falsy(find_line(res, 'Resolved - '))
-    truthy(find_line(res, 'Pending - '))
+    falsy(find_line(res, 'Resolved #'))
+    truthy(find_line(res, 'Pending #'))
     truthy(find_line(res, '1 resolved hidden'))
     truthy(find_line(res, 'Comments  2 active - 1/3 resolved'))
   end)
 
   it('folds threads', function()
     local res = do_render { folded = { [1] = true } }
-    local t1 = find_line(res, 'Active - General')
+    local t1 = find_line(res, 'Active #1 - General')
     contains(res.lines[t1], '(4 comments)')
     eq(t1 + 1, find_line(res, '+----', t1), 'folded thread is just top + bottom')
     truthy(res.items[t1].folded)
@@ -475,8 +475,8 @@ describe('render.pr_detail', function()
 
   it('thread status highlights', function()
     local res = do_render()
-    local t2 = find_line(res, 'Resolved - ')
-    local t1 = find_line(res, 'Active - ')
+    local t2 = find_line(res, 'Resolved #')
+    local t1 = find_line(res, 'Active #')
     local groups = {}
     for _, h in ipairs(res.highlights) do
       if h[1] == t2 - 1 or h[1] == t1 - 1 then

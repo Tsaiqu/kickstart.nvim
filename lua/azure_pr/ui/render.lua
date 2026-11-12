@@ -890,9 +890,14 @@ function M.pr_detail(pr, threads, opts)
     local title = {
       { (open and icons.thread_active or icons.thread_resolved) .. ' ', t_hl },
       { M.THREAD_STATUS_LABEL[t.status or 'active'] or oneline(t.status), t_hl },
+    }
+    if t.id ~= nil then
+      title[#title + 1] = { ' #' .. tostring(t.id), 'AzurePRMuted' }
+    end
+    vim.list_extend(title, {
       { dot, 'AzurePRMuted' },
       { oneline(loc), is_file and 'AzurePRPath' or 'AzurePRMuted' },
-    }
+    })
     if is_folded then
       title[#title + 1] = { ' (' .. n_comments .. (n_comments == 1 and ' comment' or ' comments') .. ')', 'AzurePRMuted' }
     end

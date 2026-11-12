@@ -270,7 +270,7 @@ function M.show_thread(buf, lnum)
       lines[#lines + 1] = ''
     end
     if #threads > 1 then
-      lines[#lines + 1] = ('[%s] thread %d/%d'):format(t.status or 'unknown', i, #threads)
+      lines[#lines + 1] = ('[%s] thread %d/%d%s'):format(t.status or 'unknown', i, #threads, t.id ~= nil and (' #' .. tostring(t.id)) or '')
       items[#lines] = { kind = 'thread', thread = t }
       highlights[#highlights + 1] = { #lines - 1, 0, -1, is_open(t.status) and 'AzurePRThreadActive' or 'AzurePRInlineResolved' }
     end
@@ -302,6 +302,9 @@ function M.show_thread(buf, lnum)
   vim.bo[fbuf].modifiable = false
 
   local status = #threads == 1 and (threads[1].status or 'unknown') or (#threads .. ' threads')
+  if #threads == 1 and threads[1].id ~= nil then
+    status = status .. ' #' .. tostring(threads[1].id)
+  end
   local title = (' %s · %d comment%s '):format(status, total, total == 1 and '' or 's')
   local win = vim.api.nvim_open_win(fbuf, true, {
     relative = 'cursor',
