@@ -116,11 +116,13 @@ local function builder()
         seg = { seg }
       end
       local text = oneline(seg[1])
-      if seg[2] and #text > 0 then
-        b.highlights[#b.highlights + 1] = { lnum0, col, col + #text, seg[2] }
-      end
-      if seg[3] and #text > 0 then -- optional second group over the same range
-        b.highlights[#b.highlights + 1] = { lnum0, col, col + #text, seg[3] }
+      if #text > 0 then
+        -- seg[2..n]: groups over the same range; later ones win on conflicting attributes
+        for gi = 2, #seg do
+          if seg[gi] then
+            b.highlights[#b.highlights + 1] = { lnum0, col, col + #text, seg[gi] }
+          end
+        end
       end
       parts[#parts + 1] = text
       col = col + #text
@@ -913,11 +915,15 @@ function M.pr_detail(pr, threads, opts)
         for _, r in ipairs(snip) do
           local ln = r.kind == '-' and r.old or r.new
           local kind_hl = r.kind == '+' and 'AzurePRCodeAdd' or (r.kind == '-' and 'AzurePRCodeDel' or nil)
-          local text_seg = { r.kind .. oneline(r.text), kind_hl, r.focus and 'AzurePRCodeFocus' or nil }
-          if kind_hl == nil and r.focus then
-            text_seg[2], text_seg[3] = 'AzurePRCodeFocus', nil
+          -- AzurePRCodeBg first: the whole code row content has a background, the rest overrides it
+          local text_seg = { r.kind .. oneline(r.text), 'AzurePRCodeBg' }
+          if kind_hl then
+            text_seg[#text_seg + 1] = kind_hl
           end
-          frow({ { string.format('%4s ', ln and tostring(ln) or ''), 'AzurePRLineNr' }, text_seg }, nil, 'AzurePRCodeBg')
+          if r.focus then
+            text_seg[#text_seg + 1] = 'AzurePRCodeFocus'
+          end
+          frow({ { string.format('%4s ', ln and tostring(ln) or ''), 'AzurePRCodeBg', 'AzurePRLineNr' }, text_seg }, nil, 'AzurePRCodeBg')
           has_code = true
         end
       end

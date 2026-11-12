@@ -29,7 +29,7 @@ local function truncate_segs(segs, max)
   for _, seg in ipairs(segs) do
     local w = dw(seg[1])
     if used + w <= budget then
-      out[#out + 1] = { seg[1], seg[2], seg[3] }
+      out[#out + 1] = vim.list_extend({}, seg)
       used = used + w
     else
       local chars, cur = {}, used
@@ -41,7 +41,9 @@ local function truncate_segs(segs, max)
         chars[#chars + 1] = ch
         cur = cur + cw
       end
-      out[#out + 1] = { table.concat(chars) .. '…', seg[2], seg[3] }
+      local cut = vim.list_extend({}, seg)
+      cut[1] = table.concat(chars) .. '…'
+      out[#out + 1] = cut
       return out
     end
   end

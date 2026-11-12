@@ -645,6 +645,16 @@ describe('render.pr_detail thread frames', function()
     local ctx = find_line(res, 'ctx focus')
     truthy(hl_on(res, ctx, 'AzurePRCodeFocus'))
     truthy(hl_on(res, ctx, 'AzurePRCodeBg'))
+    -- the code background starts right after "| " and covers line number + text
+    eq(2, hl_on(res, add, 'AzurePRCodeBg')[2])
+    local ranges = 0
+    for _, h in ipairs(res.highlights) do
+      if h[1] == add - 1 and h[4] == 'AzurePRCodeBg' and h[2] <= 2 then
+        ranges = ranges + 1
+      end
+    end
+    truthy(ranges >= 1)
+    truthy(hl_on(res, add, 'AzurePRLineNr'))
     local body = find_line(res, 'First line')
     truthy(hl_on(res, body, 'AzurePRCommentBody'))
     truthy(bot)

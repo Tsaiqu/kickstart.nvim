@@ -271,7 +271,12 @@ All groups are linked with `default = true`, so you can override them in your co
 `AzurePRTitle`, `AzurePRHeader`, `AzurePRGroup`, `AzurePRId`, `AzurePRAuthor`, `AzurePRBranch`,
 `AzurePRDraft`, `AzurePRApproved`, `AzurePRRejected`, `AzurePRWaiting`, `AzurePRNoVote`,
 `AzurePRMuted`, `AzurePRThreadActive`, `AzurePRThreadResolved`, `AzurePRCommentAuthor`,
-`AzurePRCommentDate`, `AzurePRFile`, `AzurePRKey`.
+`AzurePRCommentDate`, `AzurePRKey`.
+
+Comment frames and inline markers (default links in parentheses): `AzurePRPath` (`NonText`),
+`AzurePRBorder` (`FloatBorder`), `AzurePRCodeBg` (`ColorColumn`), `AzurePRCodeAdd` (`DiffAdd`),
+`AzurePRCodeDel` (`DiffDelete`), `AzurePRCodeFocus` (`Visual`), `AzurePRLineNr` (`LineNr`),
+`AzurePRCommentBody` (`Normal`), `AzurePRInlineHint` (`Comment`), `AzurePRInlineResolved` (`NonText`).
 
 ## Troubleshooting
 

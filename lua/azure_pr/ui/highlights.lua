@@ -30,7 +30,6 @@ M.links = {
   AzurePRInlineHint = 'Comment',
   AzurePRInlineResolved = 'NonText',
   AzurePRCommentDate = 'Comment',
-  AzurePRFile = 'Directory',
   AzurePRHeader = 'Title',
   AzurePRKey = 'Special',
 }
