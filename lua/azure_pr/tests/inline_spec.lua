@@ -274,3 +274,196 @@ describe('inline.show_thread', function()
     store.clear()
   end)
 end)
+
+describe('inline.show_thread fallback pr', function()
+  local store = require 'azure_pr.threads_store'
+  it('uses the pr given to place when the store has no entry', function()
+    local actions = require 'azure_pr.actions'
+    local o_reply = actions.reply
+    local got
+    actions.reply = function(pr, _, _, _)
+      got = pr
+    end
+    local buf = scratch()
+    local pr = { id = 987001, repository = { name = 'web' } }
+    store.clear()
+    inline.place(buf, pr, { thread(11, 3) }, OPTS)
+    vim.api.nvim_win_set_cursor(0, { 3, 0 })
+    inline.show_thread(buf, 3)
+    local fw
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_config(w).relative ~= '' then
+        fw = w
+      end
+    end
+    vim.api.nvim_buf_call(vim.api.nvim_win_get_buf(fw), function()
+      vim.cmd 'normal r'
+    end)
+    actions.reply = o_reply
+    eq('web', got.repository.name)
+    pcall(vim.api.nvim_win_close, fw, true)
+  end)
+end)
+
+describe('inline auto attach', function()
+  local store = require 'azure_pr.threads_store'
+  local actions = require 'azure_pr.actions'
+  local config = require 'azure_pr.config'
+  local state = require 'azure_pr.state'
+  local o = {
+    git = actions._git,
+    cbp = actions.current_branch_pr,
+    target = config.resolve_target,
+    notify = vim.notify,
+    loaded = package.loaded['diffview.lib'],
+  }
+  local notes, cbp_calls
+
+  local function setup(opts)
+    opts = opts or {}
+    notes, cbp_calls = 0, 0
+    inline._reset_caches()
+    store.clear()
+    state.diff_views = {}
+    vim.notify = function()
+      notes = notes + 1
+    end
+    config.resolve_target = function(cb)
+      cb(nil, { organization = 'o', project = 'p' })
+    end
+    actions._git = function(args, _, cb)
+      local key = table.concat(args, ' ')
+      if key == 'rev-parse --show-toplevel' then
+        return cb(0, '/tmp/repo\n', '')
+      elseif key == 'rev-parse --abbrev-ref HEAD' then
+        return cb(0, 'feature/x\n', '')
+      end
+      cb(1, '', 'unexpected ' .. key)
+    end
+    actions.current_branch_pr = function(cb)
+      cbp_calls = cbp_calls + 1
+      if opts.pr then
+        return cb(nil, opts.pr)
+      end
+      cb 'No active pull request'
+    end
+  end
+  local function teardown()
+    actions._git, actions.current_branch_pr, config.resolve_target = o.git, o.cbp, o.target
+    vim.notify = o.notify
+    package.loaded['diffview.lib'] = o.loaded
+    state.diff_views = {}
+    store.clear()
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_get_name(b):find('/tmp/repo/', 1, true) then
+        pcall(vim.api.nvim_buf_delete, b, { force = true })
+      end
+    end
+  end
+
+  local function diff_view(buf, symbol)
+    local file = { bufnr = buf, path = 'src/a.py', symbol = symbol }
+    local win = { file = file }
+    local layout = symbol == 'a' and { a = win, b = { file = { bufnr = -1 } } } or { b = win, a = { file = { bufnr = -1 } } }
+    package.loaded['diffview.lib'] = {
+      get_current_view = function()
+        return { tabpage = vim.api.nvim_get_current_tabpage(), cur_entry = { layout = layout } }
+      end,
+    }
+  end
+
+  it('does nothing without a diff_views entry', function()
+    setup()
+    local buf = scratch()
+    diff_view(buf, 'b')
+    store.set({ id = 987010 }, { thread(1, 4) })
+    inline.attach_diffview_buf(buf)
+    eq(0, #marks(buf))
+    eq(0, cbp_calls)
+    teardown()
+  end)
+
+  it('attach_diffview_buf places right-side threads on the b buffer', function()
+    setup()
+    local buf = scratch()
+    diff_view(buf, 'b')
+    local pr = { id = 987011 }
+    state.diff_views[vim.api.nvim_get_current_tabpage()] = { pr = pr, revs = {} }
+    store.set(pr, { thread(1, 4), thread(2, 6, { side = 'left' }) })
+    inline.attach_diffview_buf(buf)
+    local m = marks(buf)
+    eq(1, #m)
+    eq(3, m[1][2])
+    teardown()
+  end)
+
+  it('attach_diffview_buf shows left threads on the a buffer', function()
+    setup()
+    local buf = scratch()
+    diff_view(buf, 'a')
+    local pr = { id = 987012 }
+    state.diff_views[vim.api.nvim_get_current_tabpage()] = { pr = pr, revs = {} }
+    store.set(pr, { thread(1, 4), thread(2, 6, { side = 'left' }) })
+    inline.attach_diffview_buf(buf)
+    local m = marks(buf)
+    eq(1, #m)
+    eq(5, m[1][2])
+    teardown()
+  end)
+
+  it('prunes diff_views of closed tabs', function()
+    setup()
+    state.diff_views[99999] = { pr = { id = 1 }, revs = {} }
+    local cur = vim.api.nvim_get_current_tabpage()
+    state.diff_views[cur] = { pr = { id = 2 }, revs = {} }
+    package.loaded['diffview.lib'] = {
+      tabpage_to_view = function()
+        return {}
+      end,
+    }
+    inline._prune_diff_views()
+    eq(nil, state.diff_views[99999])
+    truthy(state.diff_views[cur])
+    teardown()
+  end)
+
+  it('attach_file_buf stays silent when no PR is found', function()
+    setup()
+    local buf = scratch()
+    vim.bo[buf].buftype = ''
+    vim.api.nvim_buf_set_name(buf, '/tmp/repo/src/a.py')
+    inline.attach_file_buf(buf)
+    eq(0, #marks(buf))
+    eq(0, notes)
+    eq(1, cbp_calls)
+    teardown()
+  end)
+
+  it('attach_file_buf looks the PR up once per (root, branch)', function()
+    setup()
+    local buf = scratch()
+    vim.bo[buf].buftype = ''
+    vim.api.nvim_buf_set_name(buf, '/tmp/repo/src/a.py')
+    inline.attach_file_buf(buf)
+    local buf2 = scratch()
+    vim.bo[buf2].buftype = ''
+    vim.api.nvim_buf_set_name(buf2, '/tmp/repo/src/b.py')
+    inline.attach_file_buf(buf2)
+    eq(1, cbp_calls)
+    teardown()
+  end)
+
+  it('attach_file_buf places markers when the PR is found (path relative to root)', function()
+    local pr = { id = 987013, source_branch = 'feature/x' }
+    setup { pr = pr }
+    store.set(pr, { thread(1, 4) })
+    local buf = scratch()
+    vim.bo[buf].buftype = ''
+    vim.api.nvim_buf_set_name(buf, '/tmp/repo/src/a.py')
+    inline.attach_file_buf(buf)
+    eq(1, #marks(buf))
+    eq('src/a.py', vim.b[buf].azure_pr_inline.path)
+    eq(0, notes)
+    teardown()
+  end)
+end)

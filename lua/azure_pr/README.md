@@ -112,6 +112,7 @@ belongs to harpoon in this config.
 | `<leader>pr` | Review queue |
 | `<leader>pc` | PR of the current branch |
 | `<leader>pa` | Comment on the current line (normal) or selected lines (visual) |
+| `<leader>pt` | Thread float for the current line (inline markers) |
 
 Change one with `keymaps = { global = { list = '<leader>PL' } }`, disable one with `false`,
 disable all with `keymaps = { global = { enabled = false } }`. The which-key group label
@@ -234,6 +235,24 @@ keymaps = {
   detail = { delete = 'dd' },
 }
 ```
+
+## Comment frames and inline markers
+
+In the PR view every thread is drawn as a bordered frame: the file path, the code it refers to
+(a few lines of the PR's source version, or of the merge base for comments on removed lines), then
+the comments. Frames follow `config.icons` (rounded box with nerd fonts, `+ - |` otherwise).
+
+Threads are also marked in the code itself, without moving any lines (a sign plus a short hint at
+the end of the line):
+
+- **diffview** buffers opened with `D` (right side, and left side for comments on removed lines);
+- **normal files** in the working tree, when the checked-out branch is the PR's source branch
+  (found silently once per repository and branch; no prompts, no messages).
+
+Resolved threads are dimmed. `<leader>pt` opens the thread(s) on the current line in a float;
+`]t` / `[t` jump to the next / previous marked line. In the float: `r` reply, `s` change status,
+`o` open the PR in the browser, `q` / `<Esc>` close. Keys are configurable under
+`keymaps.global.thread`, `keymaps.detail.next_thread` / `prev_thread` and `keymaps.inline`.
 
 ## Comment editor
 

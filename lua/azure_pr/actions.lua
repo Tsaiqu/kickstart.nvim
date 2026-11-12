@@ -816,9 +816,13 @@ end
 -- Current-branch PR & line comments
 -- ---------------------------------------------------------------------------
 
-local function select_pr(prs, branch, cb)
+local function select_pr(prs, branch, cb, silent)
   if #prs == 1 then
     return cb(nil, prs[1])
+  end
+  if silent then
+    -- background lookups never prompt: ambiguous -> "nothing found"
+    return cb(nil, nil)
   end
   vim.ui.select(prs, {
     prompt = 'Pull requests for ' .. branch,
@@ -849,7 +853,7 @@ end
 --- `origin` remote when that is an Azure DevOps remote). Several matches -> vim.ui.select.
 --- `cb(err, pr)`; `pr` is nil without error when the user cancelled the selection.
 ---@param cb fun(err: string|nil, pr: AzurePR|nil)
----@param opts { cwd: string|nil }|nil
+---@param opts { cwd: string|nil, silent: boolean|nil }|nil silent: several matches -> cb(nil, nil), no vim.ui.select
 function M.current_branch_pr(cb, opts)
   opts = opts or {}
   local cwd = opts.cwd or vim.fn.getcwd()
@@ -873,7 +877,7 @@ function M.current_branch_pr(cb, opts)
       end
       cached = filter_repo(cached, repo_name)
       if #cached > 0 then
-        return select_pr(cached, branch, cb)
+        return select_pr(cached, branch, cb, opts.silent)
       end
 
       api.list_pull_requests({ status = 'active', source_ref = branch, repository = repo_name }, function(err, raws)
@@ -890,7 +894,7 @@ function M.current_branch_pr(cb, opts)
         if #prs == 0 then
           return cb('No active pull request for branch ' .. branch)
         end
-        select_pr(prs, branch, cb)
+        select_pr(prs, branch, cb, opts.silent)
       end)
     end)
   end)

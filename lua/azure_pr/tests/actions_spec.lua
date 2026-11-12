@@ -927,6 +927,25 @@ describe('actions.current_branch_pr', function()
     eq(2, got.id)
   end)
 
+  it('silent mode returns nothing instead of asking when multiple PRs match', function()
+    local actions, state = setup {
+      git = { ['rev-parse --abbrev-ref HEAD'] = { 0, 'feature/x' }, ['remote get-url origin'] = { 1, '', 'no origin' } },
+      select = function(items)
+        return items[2]
+      end,
+    }
+    state.prs = { pr { id = 1 }, pr { id = 2, repository = { id = 'R2', name = 'api' } } }
+    local called, got_err, got_pr = false, 'unset', 'unset'
+    actions.current_branch_pr(function(e, p)
+      called, got_err, got_pr = true, e, p
+    end, { silent = true })
+    teardown()
+    truthy(called)
+    eq(nil, got_err)
+    eq(nil, got_pr)
+    eq(0, #ctx.selects)
+  end)
+
   it('errors for no PR, detached HEAD and non-repo', function()
     local actions = setup {
       git = { ['rev-parse --abbrev-ref HEAD'] = { 0, 'lonely' }, ['remote get-url origin'] = { 0, remote } },

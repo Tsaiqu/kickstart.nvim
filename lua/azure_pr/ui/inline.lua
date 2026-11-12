@@ -8,7 +8,7 @@ M.ns = vim.api.nvim_create_namespace 'azure_pr_inline'
 
 local HINT_WIDTH = 80
 
---- Per-buffer state: { marks = { { lnum, thread_ids, threads } }, keys = { lhs... } }
+--- Per-buffer state: { marks = { { lnum, thread_ids, threads } }, keys = { lhs... }, pr = PR given to place }
 local state = {}
 
 local function is_open(status)
@@ -151,7 +151,7 @@ function M.place(buf, pr, threads, opts)
   end
   vim.api.nvim_buf_clear_namespace(buf, M.ns, 0, -1)
   local old = state[buf]
-  local st = { marks = {}, keys = old and old.keys or nil }
+  local st = { marks = {}, keys = old and old.keys or nil, pr = pr }
   state[buf] = st
 
   local icons = hl.icons(use_icons())
@@ -258,7 +258,8 @@ function M.show_thread(buf, lnum)
   end
   local info = vim.b[buf].azure_pr_inline or {}
   local entry = info.pr_id ~= nil and require('azure_pr.threads_store').get(info.pr_id) or nil
-  local pr = entry and entry.pr or { id = info.pr_id }
+  local pst = state[buf]
+  local pr = (entry and entry.pr) or (pst and pst.pr) or { id = info.pr_id }
 
   local render = require 'azure_pr.ui.render'
   local width = math.min(80, vim.o.columns - 4)
@@ -423,6 +424,188 @@ function M.jump(buf, dir)
     end
   end
   vim.api.nvim_win_set_cursor(win, { target, 0 })
+end
+
+-- ---------------------------------------------------------------------------
+-- Automatic attach (diffview buffers opened by azure_pr, working-tree files of a PR branch).
+-- Everything here is silent: no vim.notify, no vim.ui.select, errors are dropped.
+-- ---------------------------------------------------------------------------
+
+local GIT_CACHE_TTL = 30 -- seconds
+
+local git_cache = {} ---@type table<string, { root: string, branch: string, t: number }> dir -> repo info
+local pr_cache = {} ---@type table<string, table> "root\0branch" -> { pr = PR|false } or { waiting = fun[] }
+
+--- Forget cached git info and PR lookups (tests).
+function M._reset_caches()
+  git_cache, pr_cache = {}, {}
+end
+
+--- Load threads of `pr` (store first, then a silent fetch) and place them in `buf`.
+local function place_from_store(buf, pr, opts)
+  local store = require 'azure_pr.threads_store'
+  local entry = store.get(pr.id)
+  if entry then
+    return M.place(buf, pr, entry.threads, opts)
+  end
+  store.fetch(pr, function(err, threads)
+    if not err and threads and vim.api.nvim_buf_is_valid(buf) then
+      M.place(buf, pr, threads, opts)
+    end
+  end)
+end
+
+--- `User DiffviewDiffBufWinEnter`: mark threads in a diffview buffer of a PR diff opened by azure_pr.
+---@param buf integer
+function M.attach_diffview_buf(buf)
+  local ok_lib, lib = pcall(require, 'diffview.lib')
+  if not ok_lib or type(lib.get_current_view) ~= 'function' then
+    return
+  end
+  local ok, view = pcall(lib.get_current_view)
+  if not ok or type(view) ~= 'table' then
+    return
+  end
+  local diff = require('azure_pr.state').diff_views[view.tabpage or vim.api.nvim_get_current_tabpage()]
+  if not diff or not diff.pr then
+    return
+  end
+  local layout = view.cur_entry and view.cur_entry.layout
+  if not layout then
+    return
+  end
+  for _, win in ipairs { layout.a, layout.b } do
+    local file = win and win.file
+    if file and file.bufnr == buf and file.path then
+      local side = file.symbol == 'a' and 'left' or 'right'
+      return place_from_store(buf, diff.pr, { side = side, path = file.path })
+    end
+  end
+end
+
+--- Drop diff_views entries whose diffview tab is gone.
+function M._prune_diff_views()
+  local views = require('azure_pr.state').diff_views
+  local ok_lib, lib = pcall(require, 'diffview.lib')
+  for tab in pairs(views) do
+    local gone = not vim.api.nvim_tabpage_is_valid(tab)
+    if not gone and ok_lib and type(lib.tabpage_to_view) == 'function' then
+      local okv, v = pcall(lib.tabpage_to_view, tab)
+      gone = okv and not v
+    end
+    if gone then
+      views[tab] = nil
+    end
+  end
+end
+
+--- Root and branch of the git repo containing `dir` (cached for GIT_CACHE_TTL seconds).
+local function repo_info(dir, cb)
+  local c = git_cache[dir]
+  if c and os.time() - c.t < GIT_CACHE_TTL then
+    return cb(c.root, c.branch)
+  end
+  local actions = require 'azure_pr.actions'
+  actions._git({ 'rev-parse', '--show-toplevel' }, { cwd = dir }, function(code, out)
+    local root = vim.trim(out or '')
+    if code ~= 0 or root == '' then
+      return cb(nil)
+    end
+    actions._git({ 'rev-parse', '--abbrev-ref', 'HEAD' }, { cwd = dir }, function(bcode, bout)
+      local branch = vim.trim(bout or '')
+      if bcode ~= 0 or branch == '' or branch == 'HEAD' then
+        return cb(nil)
+      end
+      git_cache[dir] = { root = root, branch = branch, t = os.time() }
+      cb(root, branch)
+    end)
+  end)
+end
+
+--- PR whose source branch is `branch`: an open detail view first, else one silent lookup per session.
+local function pr_for_branch(root, branch, cb)
+  for _, dst in pairs(require('azure_pr.ui.detail')._states) do
+    if dst.pr and dst.pr.source_branch == branch then
+      return cb(dst.pr)
+    end
+  end
+  local key = root .. '\0' .. branch
+  local hit = pr_cache[key]
+  if hit and hit.waiting then
+    table.insert(hit.waiting, cb)
+    return
+  elseif hit then
+    return cb(hit.pr or nil)
+  end
+  local entry = { waiting = { cb } }
+  pr_cache[key] = entry
+  require('azure_pr.actions').current_branch_pr(function(err, pr)
+    local result = (not err and pr) or false
+    pr_cache[key] = { pr = result }
+    for _, f in ipairs(entry.waiting) do
+      f(result or nil)
+    end
+  end, { cwd = root, silent = true })
+end
+
+--- `BufWinEnter` of a regular file: mark PR threads when HEAD is the PR's source branch.
+---@param buf integer
+function M.attach_file_buf(buf)
+  if not vim.api.nvim_buf_is_valid(buf) or vim.bo[buf].buftype ~= '' then
+    return
+  end
+  local name = vim.api.nvim_buf_get_name(buf)
+  if name == '' or name:find '^%a[%w+.-]*://' or state[buf] then
+    return
+  end
+  repo_info(vim.fs.dirname(name), function(root, branch)
+    if not root then
+      return
+    end
+    local prefix = root:gsub('/+$', '') .. '/'
+    if name:sub(1, #prefix) ~= prefix then
+      return
+    end
+    local rel = name:sub(#prefix + 1)
+    -- only when azure_pr resolves an Azure DevOps target for this repo
+    require('azure_pr.config').resolve_target(function(terr)
+      if terr then
+        return
+      end
+      pr_for_branch(root, branch, function(pr)
+        if pr and vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_get_name(buf) == name then
+          place_from_store(buf, pr, { side = 'right', path = rel })
+        end
+      end)
+    end)
+  end)
+end
+
+--- Register the autocmds (idempotent).
+function M.setup()
+  local group = vim.api.nvim_create_augroup('AzurePRInline', { clear = true })
+  vim.api.nvim_create_autocmd('User', {
+    group = group,
+    pattern = 'DiffviewDiffBufWinEnter',
+    callback = function()
+      pcall(M.attach_diffview_buf, vim.api.nvim_get_current_buf())
+    end,
+  })
+  vim.api.nvim_create_autocmd('User', {
+    group = group,
+    pattern = 'DiffviewViewClosed',
+    callback = function()
+      vim.schedule(function()
+        pcall(M._prune_diff_views)
+      end)
+    end,
+  })
+  vim.api.nvim_create_autocmd('BufWinEnter', {
+    group = group,
+    callback = function(ev)
+      pcall(M.attach_file_buf, ev.buf)
+    end,
+  })
 end
 
 return M

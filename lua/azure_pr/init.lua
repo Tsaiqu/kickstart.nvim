@@ -330,6 +330,7 @@ function M.setup(opts)
   local config = mod 'config'
   config.setup(opts or {})
   mod('ui.highlights').setup()
+  mod('ui.inline').setup()
   local cfg = config.get()
 
   vim.api.nvim_create_user_command('AzurePR', M.command, {
