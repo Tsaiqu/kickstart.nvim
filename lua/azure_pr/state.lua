@@ -10,6 +10,7 @@ function M.reset()
   M.status = nil ---@type string|nil last server-side status filter
   M.collapsed = {} ---@type table<string, boolean> group key -> collapsed
   M.drafts = {} ---@type table<string, string> editor title -> comment text whose send failed
+  M.diff_views = {} ---@type table<integer, {pr: AzurePR, revs: {left: string, right: string, base: string|nil}}> diffview tabpage -> PR opened by M.diff
   M.review_pr = nil ---@type AzurePR|nil PR of the most recently opened/used detail view (line comment fallback)
 end
 

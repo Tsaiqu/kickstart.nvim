@@ -576,6 +576,72 @@ describe('actions.open_check', function()
   end)
 end)
 
+describe('actions.resolve_pr_revs', function()
+  local function verify(rev)
+    return 'rev-parse --verify --quiet ' .. rev .. '^{commit}'
+  end
+  local FETCH = 'fetch origin +refs/heads/main:refs/remotes/origin/main +refs/heads/feature/x:refs/remotes/origin/feature/x'
+  local P = { source_commit = 'src1', target_commit = 'tgt1' }
+
+  it('returns left, right and the merge base', function()
+    local actions = setup {
+      git = { [FETCH] = { 0 }, [verify 'tgt1'] = { 0 }, [verify 'src1'] = { 0 }, ['merge-base tgt1 src1'] = { 0, 'basesha\n' } },
+    }
+    local err, revs
+    actions.resolve_pr_revs(pr(P), '/repo', function(e, r)
+      err, revs = e, r
+    end)
+    teardown()
+    eq(nil, err)
+    eq({ left = 'tgt1', right = 'src1', base = 'basesha' }, revs)
+    eq({ FETCH, verify 'tgt1', verify 'src1', 'merge-base tgt1 src1' }, ctx.git)
+  end)
+
+  it('skips the branch fetch with fetch = false', function()
+    local actions = setup {
+      git = { [verify 'tgt1'] = { 0 }, [verify 'src1'] = { 0 }, ['merge-base tgt1 src1'] = { 0, 'b\n' } },
+    }
+    local revs
+    actions.resolve_pr_revs(pr(P), '/repo', function(_, r)
+      revs = r
+    end, { fetch = false })
+    teardown()
+    eq('b', revs.base)
+    eq({ verify 'tgt1', verify 'src1', 'merge-base tgt1 src1' }, ctx.git)
+  end)
+
+  it('reports a side that cannot be found', function()
+    local actions = setup {
+      git = { [FETCH] = { 128, '', 'fatal: nope' }, [verify 'tgt1'] = { 0 } },
+    }
+    local err
+    actions.resolve_pr_revs(pr(P), '/repo', function(e)
+      err = e
+    end)
+    teardown()
+    contains(err, 'cannot find feature/x locally')
+    contains(err, 'fatal: nope')
+  end)
+
+  it('caches the result per PR and can be bypassed', function()
+    local actions = setup {
+      git = { [FETCH] = { 0 }, [verify 'tgt1'] = { 0 }, [verify 'src1'] = { 0 }, ['merge-base tgt1 src1'] = { 0, 'b\n' } },
+    }
+    local n = 0
+    local function cb()
+      n = n + 1
+    end
+    actions.resolve_pr_revs(pr(P), '/repo', cb)
+    local calls = #ctx.git
+    actions.resolve_pr_revs(pr(P), '/repo', cb)
+    eq(calls, #ctx.git)
+    eq(2, n)
+    actions.resolve_pr_revs(pr(P), '/repo', cb, { cache = false })
+    eq(calls * 2, #ctx.git)
+    teardown()
+  end)
+end)
+
 describe('actions.diff', function()
   local REMOTE = 'remote get-url origin'
   local FETCH = 'fetch origin +refs/heads/main:refs/remotes/origin/main +refs/heads/feature/x:refs/remotes/origin/feature/x'
@@ -610,6 +676,27 @@ describe('actions.diff', function()
     eq({ range = 'tgt1...src1' }, done)
     eq({ 'tgt1...src1' }, opened)
     eq({ REMOTE, FETCH, verify 'tgt1', verify 'src1' }, ctx.git)
+  end)
+
+  it('remembers the PR and revs per diffview tab', function()
+    local actions = setup {
+      git = {
+        [REMOTE] = { 0, 'https://dev.azure.com/org/proj/_git/web\n' },
+        [FETCH] = { 0 },
+        [verify 'tgt1'] = { 0 },
+        [verify 'src1'] = { 0 },
+      },
+    }
+    actions._has_diffview = function()
+      return true
+    end
+    actions._open_diffview = function() end
+    actions.diff(pr { source_commit = 'src1', target_commit = 'tgt1' })
+    local view = require('azure_pr.state').diff_views[vim.api.nvim_get_current_tabpage()]
+    teardown()
+    eq('tgt1', view.revs.left)
+    eq('src1', view.revs.right)
+    eq(42, view.pr.id)
   end)
 
   it('falls back to origin/<branch> without commit ids', function()
