@@ -120,10 +120,16 @@ local function set_keys(buf, st)
   local keys = nav_keys()
   for _, spec in ipairs { { keys.next, 1, 'Next thread' }, { keys.prev, -1, 'Previous thread' } } do
     for _, lhs in ipairs(spec[1]) do
-      vim.keymap.set('n', lhs, function()
-        M.jump(buf, spec[2])
-      end, { buffer = buf, silent = true, desc = 'Azure PR: ' .. spec[3] })
-      st.keys[#st.keys + 1] = lhs
+      -- never override (or later delete) a buffer-local mapping we did not create
+      local existing = vim.api.nvim_buf_call(buf, function()
+        return vim.fn.maparg(lhs, 'n', false, true)
+      end)
+      if not (type(existing) == 'table' and existing.buffer == 1) then
+        vim.keymap.set('n', lhs, function()
+          M.jump(buf, spec[2])
+        end, { buffer = buf, silent = true, desc = 'Azure PR: ' .. spec[3] })
+        st.keys[#st.keys + 1] = lhs
+      end
     end
   end
   vim.api.nvim_create_autocmd('BufWipeout', {
