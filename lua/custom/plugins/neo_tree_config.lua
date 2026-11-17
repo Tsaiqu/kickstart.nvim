@@ -42,6 +42,25 @@ return {
       silent = true,
     }, ]]
   },
+  init = function()
+    -- `:q` / `:wq` typed in the (non-floating) neo-tree window quits Neovim instead of only closing
+    -- the tree. Like `:q` in the last window, `qa` refuses (E37) while buffers have unsaved changes.
+    vim.api.nvim_create_autocmd('QuitPre', {
+      group = vim.api.nvim_create_augroup('NeoTreeQuitAll', { clear = true }),
+      callback = function()
+        local win = vim.api.nvim_get_current_win()
+        if vim.bo[vim.api.nvim_win_get_buf(win)].filetype ~= 'neo-tree' or vim.api.nvim_win_get_config(win).relative ~= '' then
+          return
+        end
+        vim.schedule(function()
+          local ok, err = pcall(vim.cmd, 'qa')
+          if not ok then
+            vim.notify(tostring(err):gsub('^Vim%(%a+%):', ''), vim.log.levels.ERROR)
+          end
+        end)
+      end,
+    })
+  end,
   opts = {
     auto_close = true,
     auto_open = false,
