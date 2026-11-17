@@ -21,6 +21,17 @@ local function close_buffer()
   end
 end
 
+-- Chowa z listy wszystkie bufory poza bieżącym (jak `close_buffer`: unlisted zamiast `bdelete`,
+-- więc LSP się nie restartuje, a niezapisane zmiany zostają w buforach).
+local function close_other_buffers()
+  local current = vim.api.nvim_get_current_buf()
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if buf ~= current and vim.bo[buf].buflisted then
+      vim.bo[buf].buflisted = false
+    end
+  end
+end
+
 return {
   {
     'akinsho/bufferline.nvim',
@@ -50,6 +61,7 @@ return {
       { '<leader>bp', '<cmd>BufferLinePick<CR>', desc = 'Pick buffer' },
       { '<leader>bc', '<cmd>BufferLinePickClose<CR>', desc = 'Pick buffer to close' },
       { '<leader>bd', close_buffer, desc = 'Close current buffer' },
+      { '<leader>bo', close_other_buffers, desc = 'Close other buffers' },
     },
   },
 }
