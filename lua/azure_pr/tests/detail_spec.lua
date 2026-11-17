@@ -880,6 +880,45 @@ describe('ui.detail (review fixes)', function()
       truthy(w1 and w2 and w2 > w1, 'frame widens: ' .. tostring(w1) .. ' -> ' .. tostring(w2))
       restore()
     end)
+
+    it('re-renders and restores window options when shown in another window (e.g. a picker jump)', function()
+      local function frame_width_of(b)
+        for _, l in ipairs(lines(b)) do
+          if l:match '^%+%-.*%-%+$' then
+            return vim.fn.strdisplaywidth(l)
+          end
+        end
+      end
+      local detail, _, _, _, restore = setup()
+      with_snippet(function() end)
+      vim.cmd 'silent! only'
+      vim.cmd 'vsplit'
+      local buf = detail.open(normalized_pr(), { split = 'current' })
+      truthy(loaded(detail, buf))
+      local wide = vim.fn.bufwinid(buf)
+      vim.api.nvim_win_set_width(wide, 30) -- frames: minimum width 40
+      vim.cmd 'doautocmd WinResized'
+      -- another, wider window with line numbers (like a plain file window) jumps to the buffer
+      local other = vim.fn.win_getid(vim.fn.winnr 'l')
+      vim.api.nvim_set_current_win(other)
+      vim.wo[other].number = true
+      vim.cmd('enew')
+      vim.cmd('buffer ' .. buf)
+      local narrow = frame_width_of(buf)
+      eq(vim.api.nvim_win_get_width(other), narrow, 'frames follow the new window on BufWinEnter')
+      vim.api.nvim_win_close(wide, true)
+      vim.cmd 'doautocmd WinResized'
+      local function frame_width()
+        for _, l in ipairs(lines(buf)) do
+          if l:match '^%+%-.*%-%+$' then
+            return vim.fn.strdisplaywidth(l)
+          end
+        end
+      end
+      falsy(vim.wo[other].number, 'detail window options applied')
+      eq(vim.api.nvim_win_get_width(other), frame_width())
+      restore()
+    end)
   end)
 end)
 

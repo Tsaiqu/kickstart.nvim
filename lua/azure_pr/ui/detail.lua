@@ -199,11 +199,13 @@ end
 
 local keymap_config -- defined below (keymaps section)
 
---- Frame width for the buffer: first window's text area (min 40); 80 when the buffer has no window.
+--- Frame width for the buffer: text area of the current window (or its first window) showing it
+--- (min 40); 80 when the buffer has no window.
 ---@param buf integer
 ---@return integer
 local function frame_width(buf)
-  local win = wins_of(buf)[1]
+  local cur = vim.api.nvim_get_current_win()
+  local win = vim.api.nvim_win_get_buf(cur) == buf and cur or wins_of(buf)[1]
   if not win then
     return 80
   end
@@ -1076,6 +1078,22 @@ local function create_buffer(id)
           pcall(vim.api.nvim_buf_delete, buf, { force = true })
         end
       end)
+    end,
+  })
+  -- Shown in another window (`:b`, a picker jump, `<C-o>`): that window keeps its own options
+  -- (numbers, nowrap…) and width, so apply the detail window setup and re-size the frames.
+  vim.api.nvim_create_autocmd('BufWinEnter', {
+    buffer = buf,
+    callback = function()
+      local win = vim.api.nvim_get_current_win()
+      if vim.api.nvim_win_get_buf(win) ~= buf then
+        return
+      end
+      setup_window(win)
+      local st = M._states[buf]
+      if st and st.render_width ~= frame_width(buf) then
+        render(buf)
+      end
     end,
   })
   vim.api.nvim_create_autocmd('BufReadCmd', {
