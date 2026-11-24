@@ -262,7 +262,7 @@ describe('render.pr_detail', function()
         comment(10, 0, 'Anna', 'Top level\nsecond line', NOW - 2 * DAY),
         comment(11, 10, 'me', 'Reply one', NOW - DAY),
         comment(12, 11, 'Anna', 'Nested reply', NOW - 3600),
-        comment(13, 10, 'Bob', 'Reply two', NOW - 60),
+        comment(13, 10, 'Bob', 'Reply two', NOW - 2 * 3600),
       },
     },
     {
@@ -413,7 +413,7 @@ describe('render.pr_detail', function()
     truthy(find_line(res2, 'No comments yet'))
   end)
 
-  it('renders threads with counts, locations and nested replies', function()
+  it('renders threads with counts, locations and flat chronological replies', function()
     local res = do_render()
     truthy(find_line(res, 'Comments  2 active - 1/3 resolved - newest first'))
     local t1 = find_line(res, 'Active #1 - General')
@@ -426,7 +426,7 @@ describe('render.pr_detail', function()
     local t3 = find_line(res, 'Pending #')
     contains(res.lines[t3], 'lua/x.lua:5-8')
     -- newest threads first, by when they were started (replies do not move them):
-    -- #3 and #2 (1d ago, higher id first), then #1 (2d ago, despite a reply 1m ago)
+    -- #3 and #2 (1d ago, higher id first), then #1 (2d ago, despite a reply 1h ago)
     truthy(t3 < t2 and t2 < t1)
     local old = do_render { comment_order = 'oldest' }
     truthy(find_line(old, 'Active #1 - General') < find_line(old, 'Pending #'))
@@ -435,17 +435,22 @@ describe('render.pr_detail', function()
     local function indent(l)
       return #res.lines[l]:match '^| ( *)' -- inside the frame
     end
-    local top = find_line(res, 'Anna', t1)
-    local r1 = find_line(res, '\\ me', t1)
+    local top = find_line(res, '> Anna', t1)
+    local r1 = find_line(res, '> me', t1)
     local nested = find_line(res, 'Nested reply', t1) - 1
-    local r2 = find_line(res, '\\ Bob', t1)
+    local r2 = find_line(res, '> Bob', t1)
     eq('comment', res.items[top].kind)
     eq(10, res.items[top].comment.id)
-    eq(indent(top) + 2, indent(r1))
-    eq(indent(r1) + 2, indent(nested))
-    eq(indent(top) + 2, indent(r2))
-    -- depth-first order: top, reply one, nested, reply two
-    truthy(top < r1 and r1 < nested and nested < r2)
+    -- Azure DevOps threads are flat: every comment at the same indent, no reply icon
+    eq(indent(top), indent(r1))
+    eq(indent(top), indent(nested))
+    eq(indent(top), indent(r2))
+    contains(res.lines[nested], '> Anna')
+    falsy(find_line(res, '\\ ', t1))
+    -- chronological order (not by parent): top (2d), reply one (1d), reply two (2h), nested (1h)
+    truthy(top < r1 and r1 < r2 and r2 < nested)
+    -- consecutive comments are separated by a blank line
+    eq('', vim.trim(res.lines[r1 - 1]:gsub('|', '')))
     -- content lines map to comment
     local second = find_line(res, 'second line', t1)
     eq(10, res.items[second].comment.id)
@@ -622,6 +627,23 @@ describe('render.pr_detail thread frames', function()
     for l = 2, #res.lines do
       if res.lines[l]:find(nerd.box_v, 1, true) or res.lines[l]:find(nerd.box_tl, 1, true) then
         eq(50, vim.fn.strdisplaywidth(res.lines[l]))
+      end
+    end
+  end)
+
+  it('cuts a too-long path from the left so the file name stays visible', function()
+    local t = vim.tbl_extend('force', file_thread, { file_path = '/' .. string.rep('deep/', 20) .. 'pkg/module.py' })
+    for _, folded in ipairs { false, true } do
+      local res = render_one(t, { width = 70, folded = folded and { [1] = true } or nil })
+      local top = frame_range(res)
+      eq(70, vim.fn.strdisplaywidth(res.lines[top]))
+      local h = hl_on(res, top, 'AzurePRPath')
+      truthy(h)
+      local shown = res.lines[top]:sub(h[2] + 1, h[3])
+      eq('…', shown:sub(1, #'…'))
+      eq('module.py:42-43', shown:sub(-#'module.py:42-43'))
+      if folded then
+        contains(res.lines[top], '(2 comments)')
       end
     end
   end)

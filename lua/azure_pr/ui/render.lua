@@ -489,37 +489,29 @@ M.latest_statuses = function(statuses)
   return require('azure_pr.models').latest_statuses(statuses)
 end
 
---- Build comment tree order: list of { comment, depth } (depth-first by parent_id).
-local function comment_tree(comments)
-  local by_id, children, roots = {}, {}, {}
-  for _, c in ipairs(comments or {}) do
-    if c.id ~= nil then
-      by_id[c.id] = c
-    end
+--- Comments of a thread in the order Azure DevOps shows them: flat and chronological
+--- (published_at, then id). ADO has no nested replies - parent_id only records which comment
+--- the reply button was pressed on - so it is ignored here.
+local function comment_order(comments)
+  local out = {}
+  for i, c in ipairs(comments or {}) do
+    out[i] = c
   end
-  for _, c in ipairs(comments or {}) do
-    local p = c.parent_id
-    if p and p ~= 0 and by_id[p] and p ~= c.id then
-      children[p] = children[p] or {}
-      table.insert(children[p], c)
-    else
-      table.insert(roots, c)
-    end
+  local pos = {}
+  for i, c in ipairs(out) do
+    pos[c] = i
   end
-  local out, seen = {}, {}
-  local function walk(c, depth)
-    if seen[c] then
-      return
+  table.sort(out, function(a, b)
+    local pa, pb = a.published_at or 0, b.published_at or 0
+    if pa ~= pb then
+      return pa < pb
     end
-    seen[c] = true
-    out[#out + 1] = { c, depth }
-    for _, ch in ipairs(children[c.id] or {}) do
-      walk(ch, depth + 1)
+    local ia, ib = tonumber(a.id), tonumber(b.id)
+    if ia and ib and ia ~= ib then
+      return ia < ib
     end
-  end
-  for _, c in ipairs(roots) do
-    walk(c, 0)
-  end
+    return pos[a] < pos[b]
+  end)
   return out
 end
 
@@ -541,29 +533,26 @@ local function thread_location(thread)
   return 'General', false
 end
 
---- Rows { segs, item } for the comments of a thread (author, date, wrapped body, replies).
+--- Rows { segs, item } for the comments of a thread (author, date, wrapped body), one under another.
 ---@param thread table
 ---@param o table { width, icons, now, user_id, pr }
 local function comment_rows(thread, o)
   local icons = o.icons
   local dot = ' ' .. (icons.dot or '-') .. ' '
   local rows = {}
-  for _, entry in ipairs(comment_tree(thread.comments)) do
-    local c, depth = entry[1], entry[2]
-    local indent = string.rep(' ', depth * 2)
-    local body_indent = indent .. '  '
-    local citem = { kind = 'comment', pr = o.pr, thread = thread, comment = c, depth = depth }
+  for i, c in ipairs(comment_order(thread.comments)) do
+    local body_indent = '  '
+    local citem = { kind = 'comment', pr = o.pr, thread = thread, comment = c }
     local function add(segs)
       rows[#rows + 1] = { segs = segs, item = citem }
     end
-    if depth > 0 then
+    if i > 1 then
       add {}
     end
     local author = oneline(c.author and (c.author.name or c.author.unique_name) or '?')
     local when = relative_time(c.published_at, o.now)
     local hsegs = {
-      { indent },
-      { ((depth > 0 and icons.reply or icons.comment) or '>') .. ' ', 'AzurePRMuted' },
+      { (icons.comment or '>') .. ' ', 'AzurePRMuted' },
       { author, c.type == 'system' and 'AzurePRMuted' or 'AzurePRCommentAuthor' },
     }
     if when ~= '' then
@@ -894,12 +883,20 @@ function M.pr_detail(pr, threads, opts)
     if t.id ~= nil then
       title[#title + 1] = { ' #' .. tostring(t.id), 'AzurePRMuted' }
     end
-    vim.list_extend(title, {
-      { dot, 'AzurePRMuted' },
-      { oneline(loc), is_file and 'AzurePRPath' or 'AzurePRMuted' },
-    })
-    if is_folded then
-      title[#title + 1] = { ' (' .. n_comments .. (n_comments == 1 and ' comment' or ' comments') .. ')', 'AzurePRMuted' }
+    title[#title + 1] = { dot, 'AzurePRMuted' }
+    local suffix = is_folded and (' (' .. n_comments .. (n_comments == 1 and ' comment' or ' comments') .. ')') or nil
+    loc = oneline(loc)
+    if is_file then
+      -- a too-long path is cut from the left so the file name (and its parent dirs) stays visible
+      local used = dw(suffix or '')
+      for _, seg in ipairs(title) do
+        used = used + dw(seg[1])
+      end
+      loc = frame.truncate_left(loc, width - 6 - used) -- 6: border chars around the title, as in frame.top
+    end
+    title[#title + 1] = { loc, is_file and 'AzurePRPath' or 'AzurePRMuted' }
+    if suffix then
+      title[#title + 1] = { suffix, 'AzurePRMuted' }
     end
     -- the top border is the thread's anchor line (`top`); other frame lines share the thread item
     b.add(frame.top(title, width, icons), vim.tbl_extend('force', thread_item, { top = true }))
@@ -948,6 +945,6 @@ end
 -- exported for tests / reuse
 M._truncate = truncate
 M._relative_time = relative_time
-M._comment_tree = comment_tree
+M._comment_order = comment_order
 
 return M

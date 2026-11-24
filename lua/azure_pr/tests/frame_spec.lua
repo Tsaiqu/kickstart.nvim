@@ -46,6 +46,27 @@ describe('frame.top', function()
   end)
 end)
 
+describe('frame.truncate_left', function()
+  it('keeps a short string untouched', function()
+    eq('src/a.lua', frame.truncate_left('src/a.lua', 20))
+  end)
+
+  it('cuts from the left keeping the tail', function()
+    eq('…dir/file.lua:12', frame.truncate_left('very/long/dir/file.lua:12', 16))
+  end)
+
+  it('respects display width of wide chars', function()
+    local s = frame.truncate_left('ąę/zażółć/plik.lua', 10)
+    eq(10, vim.fn.strdisplaywidth(s))
+    eq('…/plik.lua', s)
+  end)
+
+  it('handles tiny widths', function()
+    eq('', frame.truncate_left('abc', 0))
+    eq('…', frame.truncate_left('abc', 1))
+  end)
+end)
+
 describe('frame.row', function()
   it('pads to the exact display width (wide chars)', function()
     eq(20, width(frame.row({ { 'zażółć 🙂' } }, 20, nerd)))

@@ -492,6 +492,92 @@ describe('ui.detail', function()
     restore()
   end)
 
+  it(']t / [t scroll so the whole thread frame (down to its bottom border) is visible', function()
+    local detail, _, _, _, restore = setup()
+    local global_so = vim.o.scrolloff
+    vim.o.scrolloff = 6 -- like the user config
+    local buf = detail.open(normalized_pr())
+    truthy(loaded(detail, buf))
+    vim.cmd 'silent! only'
+    eq(0, vim.wo.scrolloff, 'detail window has no scrolloff margin')
+    vim.api.nvim_win_set_height(0, 14) -- frames start below the fold; #11 (10 lines) only fits without scrolloff
+    local function bottom_of(top)
+      local st = detail._states[buf]
+      local l = top
+      while st.items[l + 1] and st.items[l + 1].thread == st.items[top].thread do
+        l = l + 1
+      end
+      return l
+    end
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.cmd 'normal! zt'
+    for _, id in ipairs { 15, 11, 12 } do
+      feed ']t'
+      local top = thread_line(buf, id)
+      eq(top, vim.api.nvim_win_get_cursor(0)[1])
+      local bottom = bottom_of(top)
+      truthy(bottom > top, 'frame spans several lines')
+      truthy(vim.fn.line 'w0' <= top, 'top border visible for #' .. id)
+      truthy(vim.fn.line 'w$' >= bottom, 'bottom border visible for #' .. id .. ' (w$=' .. vim.fn.line 'w$' .. ', bottom=' .. bottom .. ')')
+    end
+    feed '[t'
+    local top = thread_line(buf, 11)
+    truthy(vim.fn.line 'w0' <= top and vim.fn.line 'w$' >= bottom_of(top), 'whole #11 visible after [t')
+    -- a frame taller than the window: its top border goes to the window top
+    vim.cmd 'split'
+    vim.api.nvim_win_set_height(0, 6)
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.cmd 'normal! zt'
+    feed ']t'
+    feed ']t'
+    eq(top, vim.api.nvim_win_get_cursor(0)[1])
+    truthy(bottom_of(top) - top + 1 > 6, '#11 taller than the window')
+    eq(top, vim.fn.line 'w0')
+    vim.o.scrolloff = global_so
+    restore()
+  end)
+
+  it(']t keeps the whole first thread visible when wrapped lines (description) sit above it', function()
+    -- long description lines right above the comments wrap in the detail window (wrap is on):
+    -- each takes several screen rows, so buffer lines != screen rows
+    local long = string.rep('word ', 60)
+    local description = table.concat({ long, long, long, long, long, long }, '\n')
+    local resp = default_resp()
+    resp.get_pull_request.description = description
+    resp.get_pull_request_by_id.description = description
+    local detail, _, _, _, restore = setup(resp)
+    local pr = normalized_pr()
+    pr.description = description
+    local buf = detail.open(pr)
+    truthy(loaded(detail, buf))
+    vim.cmd 'silent! only'
+    -- like the screenshot: the first thread's top border near the last screen row, its body below,
+    -- wrapped description lines above it (buffer lines != screen rows); every window height
+    local top = thread_line(buf, 15)
+    local st = detail._states[buf]
+    local bottom = top
+    while st.items[bottom + 1] and st.items[bottom + 1].thread == st.items[top].thread do
+      bottom = bottom + 1
+    end
+    vim.cmd 'split'
+    for height = bottom - top + 1, 20 do
+      vim.api.nvim_win_set_height(0, height)
+      local first = top
+      while first > 1 and vim.api.nvim_win_text_height(0, { start_row = first - 2, end_row = top - 1 }).all <= height do
+        first = first - 1
+      end
+      vim.fn.winrestview { topline = first, lnum = first, col = 0 }
+      vim.cmd 'redraw'
+      feed ']t'
+      eq(top, vim.api.nvim_win_get_cursor(0)[1])
+      vim.cmd 'redraw'
+      local where = ' (height ' .. height .. ', w0=' .. vim.fn.line 'w0' .. ', w$=' .. vim.fn.line 'w$' .. ', top=' .. top .. ', bottom=' .. bottom .. ')'
+      truthy(vim.fn.line 'w0' <= top, 'top border visible' .. where)
+      truthy(vim.fn.line 'w$' >= bottom, 'bottom border visible' .. where)
+    end
+    restore()
+  end)
+
   it('refresh keeps the cursor on the same comment when lines shift', function()
     local resp = default_resp()
     local detail, A, _, _, restore = setup(resp)

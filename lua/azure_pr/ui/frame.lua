@@ -52,6 +52,34 @@ end
 
 M.truncate_segs = truncate_segs
 
+--- Cut a string from the left to `max` display width, keeping its tail behind a
+--- leading ellipsis (for paths: the file name stays visible).
+---@param s string
+---@param max integer
+---@return string
+function M.truncate_left(s, max)
+  if max <= 0 then
+    return ''
+  end
+  if dw(s) <= max then
+    return s
+  end
+  if max == 1 then
+    return '…'
+  end
+  local chars = vim.fn.split(s, '\\zs')
+  local kept, cur = {}, 0
+  for i = #chars, 1, -1 do
+    local cw = dw(chars[i])
+    if cur + cw > max - 1 then
+      break
+    end
+    table.insert(kept, 1, chars[i])
+    cur = cur + cw
+  end
+  return '…' .. table.concat(kept)
+end
+
 ---@param width integer
 ---@return integer
 function M.inner_width(width)

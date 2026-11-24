@@ -114,6 +114,9 @@ local function setup_window(win)
   wo('foldcolumn', '0')
   wo('spell', false)
   wo('list', false)
+  -- ]t / [t scroll whole thread frames into view: a 'scrolloff' margin around the cursor (on the
+  -- top border) would push the bottom border of tall frames off screen
+  wo('scrolloff', 0)
 end
 
 --- The item for a line (1-based) or the cursor line of the current window.
@@ -916,6 +919,26 @@ local function jump_thread(dir)
     local it = st.items[l]
     if it and it.kind == 'thread' and it.top then
       vim.api.nvim_win_set_cursor(0, { l, 0 })
+      -- show the whole frame: scroll its bottom border into view, but never past its top border
+      -- (the cursor); a frame taller than the window starts at the window top. Counted in screen
+      -- rows: lines above the frame (description, checks) may wrap. The detail window has no
+      -- 'scrolloff' (setup_window), so the cursor may sit on the top row.
+      local last = l
+      while last < n and st.items[last + 1] and st.items[last + 1].thread == it.thread do
+        last = last + 1
+      end
+      vim.fn.line 'w0' -- brings the view to the new cursor first, so 'w$' below is current
+      if last > vim.fn.line 'w$' then
+        local height = vim.api.nvim_win_get_height(0)
+        local function rows(from, to)
+          return vim.api.nvim_win_text_height(0, { start_row = from - 1, end_row = to - 1 }).all
+        end
+        local topline = l
+        while topline > 1 and rows(topline - 1, last) <= height do
+          topline = topline - 1
+        end
+        vim.fn.winrestview { topline = topline, lnum = l, col = 0 }
+      end
       return
     end
     l = l + dir
