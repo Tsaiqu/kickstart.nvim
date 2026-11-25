@@ -1,3 +1,93 @@
+local function focus_next_directory(state, reverse)
+  local win = state.winid
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+  local count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(win))
+  local current = vim.api.nvim_win_get_cursor(win)[1]
+  local step = reverse and -1 or 1
+  for i = 1, count - 1 do
+    local line = (current - 1 + i * step) % count + 1
+    local node = state.tree:get_node(line)
+    if node and node.type == 'directory' and not (node.filtered_by and node.filtered_by.gitignored) then
+      vim.api.nvim_win_set_cursor(win, { line, 0 })
+      return
+    end
+  end
+end
+
+local function focus_next_git_changed(state, reverse)
+  local utils = require 'neo-tree.utils'
+  local uv = vim.uv or vim.loop
+  local node = state.tree:get_node()
+  if not node then
+    return
+  end
+  local current_path = node:get_id()
+  local git = require 'neo-tree.git'
+  local _, worktree_info = git.find_existing_worktree(current_path)
+  worktree_info = worktree_info or git.worktrees[current_path]
+  if not utils.truthy(worktree_info) then
+    return
+  end
+
+  local function is_dir(path)
+    local stat = uv.fs_stat(path)
+    return stat ~= nil and stat.type == 'directory'
+  end
+
+  local paths, seen = { current_path }, { [current_path] = true }
+  local function add(path)
+    if not seen[path] and utils.is_subpath(state.path, path) then
+      seen[path] = true
+      paths[#paths + 1] = path
+    end
+  end
+  for path, status in pairs(worktree_info.status) do
+    path = path:gsub('/+$', '')
+    if status ~= '!' then
+      if status == '?' and is_dir(path) then
+        for name, type in vim.fs.dir(path, { depth = math.huge }) do
+          if type == 'file' then
+            add(path .. '/' .. name)
+          end
+        end
+      else
+        add(path)
+      end
+    end
+  end
+
+  local sorted = utils.sort_by_tree_display(paths)
+  local from, to, step = 1, #sorted, 1
+  if reverse then
+    from, to, step = #sorted, 1, -1
+  end
+  local passed, target = false, nil
+  for i = from, to, step do
+    local path = sorted[i]
+    local file = not is_dir(path)
+    if target == nil and file then
+      target = path
+    end
+    if passed and file then
+      target = path
+      break
+    elseif path == current_path then
+      passed = true
+    end
+  end
+  if not target then
+    return
+  end
+
+  if state.tree:get_node(target) then
+    require('neo-tree.ui.renderer').focus_node(state, target)
+  else
+    require('neo-tree.sources.filesystem').navigate(state, state.path, target, nil, false)
+  end
+end
+
 return {
   'nvim-neo-tree/neo-tree.nvim',
   version = '*',
@@ -189,7 +279,7 @@ return {
     -- see `:h neo-tree-custom-commands-global`
     commands = {},
     window = {
-      position = 'left',
+      position = 'right',
       width = 40,
       mapping_options = {
         noremap = true,
@@ -346,8 +436,10 @@ return {
           -- ["D"] = "fuzzy_sorter_directory",
           ['f'] = 'filter_on_submit',
           ['<c-x>'] = 'clear_filter',
-          ['[g'] = 'prev_git_modified',
-          [']g'] = 'next_git_modified',
+          ['[g'] = 'prev_git_changed',
+          [']g'] = 'next_git_changed',
+          ['<Tab>'] = 'next_directory',
+          ['<S-Tab>'] = 'prev_directory',
           ['o'] = {
             'show_help',
             nowait = false,
@@ -388,6 +480,18 @@ return {
       },
 
       commands = {
+        next_directory = function(state)
+          focus_next_directory(state, false)
+        end,
+        prev_directory = function(state)
+          focus_next_directory(state, true)
+        end,
+        next_git_changed = function(state)
+          focus_next_git_changed(state, false)
+        end,
+        prev_git_changed = function(state)
+          focus_next_git_changed(state, true)
+        end,
         system_open = function(state)
           local node = state.tree:get_node()
           local path = node:get_id()
