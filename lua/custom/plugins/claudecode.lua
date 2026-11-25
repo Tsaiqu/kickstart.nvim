@@ -1,6 +1,19 @@
 return {
   'coder/claudecode.nvim',
   dependencies = { 'folke/snacks.nvim' },
+  init = function()
+    vim.api.nvim_create_autocmd('FileType', {
+      pattern = 'claudecode',
+      callback = function(args)
+        for _, key in ipairs { 'h', 'l' } do
+          vim.keymap.set('t', '<C-' .. key .. '>', '<C-\\><C-n><C-w>' .. key, {
+            buffer = args.buf,
+            desc = 'Leave terminal and move to window ' .. key,
+          })
+        end
+      end,
+    })
+  end,
   opts = {
     focus_after_send = true,
     terminal = {
